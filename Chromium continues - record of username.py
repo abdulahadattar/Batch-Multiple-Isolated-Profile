@@ -17,7 +17,6 @@ import queue
 def ensure_dependencies():
     required_packages = {
         "pyvda": "pyvda",
-        "keyboard": "keyboard",
         "pywin32": "win32gui",
         "win11toast": "win11toast"
     }
@@ -34,7 +33,6 @@ def ensure_dependencies():
 ensure_dependencies()
 
 import pyvda
-import keyboard
 import win32gui
 import win32process
 import win32clipboard
@@ -44,7 +42,10 @@ from win11toast import toast
 # --- CONSTANTS ---
 WM_CLIPBOARDUPDATE = 0x031D
 WM_TIMER = 0x0113
+WM_HOTKEY = 0x0312
 TIMER_ID = 1
+HOTKEY_DISPLAY_OFF_ID = 101
+HOTKEY_MANUAL_BLANK_ID = 102
 ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
 DESKTOP_FILE_PATH = os.path.join(os.environ["USERPROFILE"], "Desktop", "profiles.txt")
 GLOBAL_EXTENSION_DIR = r"C:\ChromeGrid\Extension"
@@ -158,11 +159,13 @@ def background_cleanup_worker():
             CLEANUP_QUEUE.task_done()
 
 def cleanup_resources(sleep_ref=time.sleep, rmtree_ref=shutil.rmtree, exists_ref=os.path.exists):
-    """Performs structural cleanup of global window handles, timers, and active profiles."""
+    """Performs structural cleanup of global window handles, timers, hotkeys, and active profiles."""
     print("\n[*] Commencing structural resource cleanup...")
     global GLOBAL_HWND
     if GLOBAL_HWND:
         try:
+            ctypes.windll.user32.UnregisterHotKey(GLOBAL_HWND, HOTKEY_DISPLAY_OFF_ID)
+            ctypes.windll.user32.UnregisterHotKey(GLOBAL_HWND, HOTKEY_MANUAL_BLANK_ID)
             ctypes.windll.user32.KillTimer(GLOBAL_HWND, TIMER_ID)
             ctypes.windll.user32.RemoveClipboardFormatListener(GLOBAL_HWND)
             win32gui.DestroyWindow(GLOBAL_HWND)
@@ -176,7 +179,11 @@ def cleanup_resources(sleep_ref=time.sleep, rmtree_ref=shutil.rmtree, exists_ref
             except Exception:
                 pass
     
-    sleep_ref(0.5)
+    try:
+        sleep_ref(0.5)
+    except TypeError:
+        pass
+
     for item in _tracked_profiles:
         if item["process"].poll() is None:
             try:
@@ -192,7 +199,10 @@ def cleanup_resources(sleep_ref=time.sleep, rmtree_ref=shutil.rmtree, exists_ref
                     rmtree_ref(item["path"])
                     break
                 except (PermissionError, OSError):
-                    sleep_ref(0.1)
+                    try:
+                        sleep_ref(0.1)
+                    except TypeError:
+                        pass
 
     for desktop in _created_desktops:
         try:
@@ -431,6 +441,12 @@ def wnd_proc(hwnd, msg, wparam, lparam):
         if wparam == TIMER_ID:
             check_and_clean_dead_profiles()
         return 0
+    elif msg == WM_HOTKEY:
+        if wparam == HOTKEY_DISPLAY_OFF_ID:
+            toggle_display_off()
+        elif wparam == HOTKEY_MANUAL_BLANK_ID:
+            trigger_manual_blank()
+        return 0
     return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
 def launch_grid():
@@ -450,9 +466,6 @@ def launch_grid():
 
     print(f"[*] Monitoring grid profiles ({SCREEN_WIDTH}x{PHYSICAL_HEIGHT}). Ready.")
     update_console_status(0)
-    
-    keyboard.add_hotkey('ctrl+alt+`', toggle_display_off)
-    keyboard.add_hotkey('ctrl+alt+n', trigger_manual_blank)
 
     wc = win32gui.WNDCLASS()
     wc.lpfnWndProc = wnd_proc
@@ -470,9 +483,16 @@ def launch_grid():
         )
         
         ctypes.windll.user32.AddClipboardFormatListener(GLOBAL_HWND)
-        
-        # Native User32 win32 timer allocation
         ctypes.windll.user32.SetTimer(GLOBAL_HWND, TIMER_ID, 1000, None)
+        
+        # Native RegisterHotKey configurations eliminate the high-level keyboard package crash entirely
+        MOD_CONTROL = 0x0002
+        MOD_ALT = 0x0001
+        VK_OEM_3 = 0xC0  # Backtick / Tilde mechanical key layout constant
+        VK_N = 0x4E      # N key constant
+        
+        ctypes.windll.user32.RegisterHotKey(GLOBAL_HWND, HOTKEY_DISPLAY_OFF_ID, MOD_CONTROL | MOD_ALT, VK_OEM_3)
+        ctypes.windll.user32.RegisterHotKey(GLOBAL_HWND, HOTKEY_MANUAL_BLANK_ID, MOD_CONTROL | MOD_ALT, VK_N)
         
         win32gui.PumpMessages()
     except Exception as e:
