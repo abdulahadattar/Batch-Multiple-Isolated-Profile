@@ -48,13 +48,14 @@ def send_notification(title, message):
             toast(title, message, duration="short", audio={"silent": True})
         except Exception as e:
             print(f"[!] Notification Error: {e}")
-            f
+            
     threading.Thread(target=_show_toast, daemon=True).start()
 
 # --- RESOURCE MANAGEMENT ---
 _tracked_profiles = []
 _created_desktops = []
 _tracked_extensions = []
+_last_deployed_url = "N/A"
 
 def cleanup_resources():
     print("\n[*] Commencing structural resource cleanup...")
@@ -116,7 +117,7 @@ def check_and_clean_dead_profiles():
 # --- DISPLAY METRICS & CONFIGURATION ---
 GRID_SIZE = 4
 COLUMNS = 4
-SCALE_FACTOR = 0.8
+SCALE_FACTOR = 1
 
 try:
     ctypes.windll.user32.SetProcessDPIAware()
@@ -193,7 +194,6 @@ OPTIMIZATION_FLAGS = [
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--enable-features=Touch,PointerEvent,MobileLayout",
-    "--disable-extensions-file-access-check",
     "--disable-fullscreen",
     "--disable-blink-features=Fullscreen",
     "--no-sandbox",
@@ -244,7 +244,7 @@ def build_suppression_extension():
     manifest = {
         "manifest_version": 3,
         "name": "Runtime Suppression Framework",
-        "version": "1.1",
+        "version": "1.2",
         "content_scripts": [{
             "matches": ["<all_urls>"],
             "js": ["content.js"],
@@ -254,31 +254,49 @@ def build_suppression_extension():
     
     content_script = """
     (function() {
-        // Intercept and prevent the browser installation prompt safely
+        // Enforce application runtime configuration hooks
+        Object.defineProperty(navigator, 'standalone', { get: () => true });
+        
+        const injectGlobalState = () => {
+            window.isNativeApp = true;
+            window.webkit = window.webkit || {};
+            window.webkit.messageHandlers = window.webkit.messageHandlers || {
+                JSBridge: { postMessage: () => {} }
+            };
+        };
+        injectGlobalState();
+        window.addEventListener('DOMContentLoaded', injectGlobalState);
+
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
         });
 
-        // Expanded selector rules to intercept App downloads, standard masks, and active Bonus game overlays
-        const exclusionSelectors = [
+        // Expanded target tree scanning parameters to catch graphics-only popups without target text match
+        const targets = [
             'div[class*="download" i]', 'div[id*="download" i]',
             'div[class*="modal" i]', 'div[class*="popup" i]',
             'div[class*="mask" i]', 'div[class*="overlay" i]',
             'div[class*="bonus" i]', 'div[id*="bonus" i]',
-            'div[class*="award" i]', 'div[class*="gift" i]'
+            'div[class*="award" i]', 'div[class*="gift" i]',
+            'div[class*="dialog" i]', 'div[class*="window" i]'
         ];
 
         const executeTargetedPurge = () => {
-            exclusionSelectors.forEach(selector => {
+            targets.forEach(selector => {
                 document.querySelectorAll(selector).forEach(node => {
+                    const style = window.getComputedStyle(node);
+                    const hasHighZIndex = parseInt(style.zIndex, 10) > 100;
+                    const isFixedOrAbsolute = style.position === 'fixed' || style.position === 'absolute';
                     const contentText = node.textContent.toLowerCase();
-                    // Detect matching indicators inside popup wrappers (Download incentives, currency rewards, bonus text)
+
+                    // Remove if matching words exist OR if it is a full-screen dynamic interceptor mask layout
                     if (
                         contentText.includes('download') || 
                         contentText.includes('app') || 
                         contentText.includes('rs30') || 
                         contentText.includes('bonus') || 
-                        contentText.includes('receive')
+                        contentText.includes('receive') ||
+                        (isFixedOrAbsolute && hasHighZIndex && (style.width === window.innerWidth + 'px' || node.className.toLowerCase().includes('mask')))
                     ) {
                         node.style.display = 'none';
                         node.remove();
@@ -287,7 +305,6 @@ def build_suppression_extension():
             });
         };
 
-        // Mutation tracking system to strip elements out of the viewport immediately upon insertion
         const observerInstance = new MutationObserver(() => {
             executeTargetedPurge();
         });
@@ -362,7 +379,7 @@ def force_window_to_desktop_and_position(pid, target_desktop, target_x):
         time.sleep(0.1)
 
 def deploy_profile(url):
-    global profile_count, desktop_index, current_desktop
+    global profile_count, desktop_index, current_desktop, _last_deployed_url
     
     if current_desktop is None or (profile_count > 0 and desktop_index == 0):
         current_desktop = create_and_switch_desktop()
@@ -383,14 +400,8 @@ def deploy_profile(url):
         "profile": {
             "exit_type": "Normal", 
             "exited_cleanly": True,
-            "default_content_setting_values": {
-                "fullscreen": 2,
-                "popups": 2
-            },
-            "managed_default_content_settings": {
-                "fullscreen": 2,
-                "popups": 2
-            }
+            "default_content_setting_values": {"fullscreen": 2, "popups": 2},
+            "managed_default_content_settings": {"fullscreen": 2, "popups": 2}
         }
     }
     
@@ -403,6 +414,8 @@ def deploy_profile(url):
     current_ua = random.choice(DEVICE_FINGERPRINTS)
     runtime_extension = build_suppression_extension()
     
+    _last_deployed_url = url
+    
     args = [
         browser_path,
         f"--user-data-dir={PROFILE_PATH}",
@@ -411,11 +424,12 @@ def deploy_profile(url):
         f"--window-position={logical_x_pos},0",
         f"--force-device-scale-factor={SCALE_FACTOR}", 
         f"--load-extension={runtime_extension}",
+        f"--disable-extensions-except={runtime_extension}", # Forces extension override rules in strict layouts
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
         *OPTIMIZATION_FLAGS,
-        f"--app={url}" if url.startswith("http") else url
+        f"--app={url}" # Forces clean headless border frame architecture execution rules natively
     ]
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
@@ -424,7 +438,6 @@ def deploy_profile(url):
     process = subprocess.Popen(args, creationflags=NORMAL_PRIORITY_CLASS)
     
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
-
     force_window_to_desktop_and_position(process.pid, current_desktop, physical_x_pos)
 
     profile_count += 1
@@ -433,7 +446,7 @@ def deploy_profile(url):
     time.sleep(1.5)
 
 def launch_grid():
-    global browser_path, manual_trigger
+    global browser_path, manual_trigger, _last_deployed_url
     browser_path = find_chrome_executable()
     if not browser_path:
         print("[!] Error: Chrome executable missing.")
@@ -447,9 +460,15 @@ def launch_grid():
     keyboard.add_hotkey('ctrl+alt+`', toggle_display_off)
     keyboard.add_hotkey('ctrl+alt+n', trigger_manual_blank)
 
+    profile_check_ticker = 0
+
     try:
         while True:
-            check_and_clean_dead_profiles()
+            if profile_check_ticker >= 10:
+                check_and_clean_dead_profiles()
+                profile_check_ticker = 0
+            else:
+                profile_check_ticker += 1
 
             if manual_trigger:
                 manual_trigger = False
@@ -465,23 +484,24 @@ def launch_grid():
                 
                 if clipboard_data.startswith("http"):
                     seen_links.add(clipboard_data)
+                    _last_deployed_url = clipboard_data  
                     print(f"\n[*] Unique link caught: {clipboard_data}")
                     send_notification("Link Caught", "Deploying new browser profile.")
                     deploy_profile(clipboard_data)
                 
-                elif len(clipboard_data) <= 30 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
+                elif len(clipboard_data) <= 50 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
                     seen_usernames.add(clipboard_data)
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
                     try:
                         with open(desktop_file_path, "a", encoding="utf-8") as f:
-                            f.write(f"[{timestamp}] {clipboard_data}\n")
-                        print(f"[*] Username logged to Desktop: {clipboard_data}")
-                        send_notification("Username Saved", f"{clipboard_data}\nSaved to profiles.txt")
+                            f.write(f"[{timestamp}] URL Context: {_last_deployed_url} | User: {clipboard_data}\n")
+                        print(f"[*] Username logged with domain relationship: {clipboard_data} -> {_last_deployed_url}")
+                        send_notification("Username Saved", f"User: {clipboard_data}\nContext: {_last_deployed_url}")
                     except Exception as e:
                         print(f"[!] File write error: {e}")
 
-            time.sleep(1) 
+            time.sleep(1.0) 
             
     except KeyboardInterrupt:
         pass
