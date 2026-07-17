@@ -54,6 +54,7 @@ def send_notification(title, message):
 # --- RESOURCE MANAGEMENT ---
 _tracked_profiles = []
 _created_desktops = []
+_tracked_extensions = []
 
 def cleanup_resources():
     print("\n[*] Commencing structural resource cleanup...")
@@ -71,6 +72,12 @@ def cleanup_resources():
         except Exception:
             pass
             
+    for ext_path in _tracked_extensions:
+        try:
+            shutil.rmtree(ext_path, ignore_errors=True)
+        except Exception:
+            pass
+
     for desktop in _created_desktops:
         try:
             desktop.remove()
@@ -186,7 +193,7 @@ OPTIMIZATION_FLAGS = [
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--enable-features=Touch,PointerEvent,MobileLayout",
-    "--disable-extensions",
+    "--disable-extensions-file-access-check",
     "--disable-fullscreen",
     "--disable-blink-features=Fullscreen",
     "--no-sandbox",
@@ -228,6 +235,78 @@ def find_chrome_executable():
         for p in standard_paths:
             if os.path.exists(p): return p
     return None
+
+def build_suppression_extension():
+    """Generates a dynamic injection extension to eliminate installation prompts and in-game bonus popups."""
+    ext_dir = tempfile.mkdtemp(prefix="chrome_mod_ext_")
+    _tracked_extensions.append(ext_dir)
+    
+    manifest = {
+        "manifest_version": 3,
+        "name": "Runtime Suppression Framework",
+        "version": "1.1",
+        "content_scripts": [{
+            "matches": ["<all_urls>"],
+            "js": ["content.js"],
+            "run_at": "document_start"
+        }]
+    }
+    
+    content_script = """
+    (function() {
+        // Intercept and prevent the browser installation prompt safely
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+        });
+
+        // Expanded selector rules to intercept App downloads, standard masks, and active Bonus game overlays
+        const exclusionSelectors = [
+            'div[class*="download" i]', 'div[id*="download" i]',
+            'div[class*="modal" i]', 'div[class*="popup" i]',
+            'div[class*="mask" i]', 'div[class*="overlay" i]',
+            'div[class*="bonus" i]', 'div[id*="bonus" i]',
+            'div[class*="award" i]', 'div[class*="gift" i]'
+        ];
+
+        const executeTargetedPurge = () => {
+            exclusionSelectors.forEach(selector => {
+                document.querySelectorAll(selector).forEach(node => {
+                    const contentText = node.textContent.toLowerCase();
+                    // Detect matching indicators inside popup wrappers (Download incentives, currency rewards, bonus text)
+                    if (
+                        contentText.includes('download') || 
+                        contentText.includes('app') || 
+                        contentText.includes('rs30') || 
+                        contentText.includes('bonus') || 
+                        contentText.includes('receive')
+                    ) {
+                        node.style.display = 'none';
+                        node.remove();
+                    }
+                });
+            });
+        };
+
+        // Mutation tracking system to strip elements out of the viewport immediately upon insertion
+        const observerInstance = new MutationObserver(() => {
+            executeTargetedPurge();
+        });
+
+        observerInstance.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+        
+        window.addEventListener('DOMContentLoaded', executeTargetedPurge);
+    })();
+    """
+    
+    with open(os.path.join(ext_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+    with open(os.path.join(ext_dir, "content.js"), "w", encoding="utf-8") as f:
+        f.write(content_script)
+        
+    return ext_dir
 
 def toggle_display_off():
     print("\n[*] Display off signal sent via hotkey. Press any physical key or mouse click to wake.")
@@ -322,6 +401,7 @@ def deploy_profile(url):
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
     
     current_ua = random.choice(DEVICE_FINGERPRINTS)
+    runtime_extension = build_suppression_extension()
     
     args = [
         browser_path,
@@ -330,11 +410,12 @@ def deploy_profile(url):
         f"--window-size={LOGICAL_WIDTH},{LOGICAL_HEIGHT}",
         f"--window-position={logical_x_pos},0",
         f"--force-device-scale-factor={SCALE_FACTOR}", 
+        f"--load-extension={runtime_extension}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
         *OPTIMIZATION_FLAGS,
-        url 
+        f"--app={url}" if url.startswith("http") else url
     ]
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
