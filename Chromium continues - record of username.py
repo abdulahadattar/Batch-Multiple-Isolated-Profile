@@ -139,7 +139,7 @@ def execute_profile_cleanup(path, process):
                     pass
 
     if os.path.exists(path):
-        for _ in range(30):  # Bounded loop prevents permanent freezes
+        for _ in range(30):
             try:
                 shutil.rmtree(path)
                 break
@@ -157,11 +157,13 @@ def background_cleanup_worker():
         finally:
             CLEANUP_QUEUE.task_done()
 
-def cleanup_resources():
+def cleanup_resources(sleep_ref=time.sleep, rmtree_ref=shutil.rmtree, exists_ref=os.path.exists):
+    """Performs structural cleanup of global window handles, timers, and active profiles."""
     print("\n[*] Commencing structural resource cleanup...")
     global GLOBAL_HWND
     if GLOBAL_HWND:
         try:
+            ctypes.windll.user32.KillTimer(GLOBAL_HWND, TIMER_ID)
             ctypes.windll.user32.RemoveClipboardFormatListener(GLOBAL_HWND)
             win32gui.DestroyWindow(GLOBAL_HWND)
         except Exception:
@@ -174,7 +176,7 @@ def cleanup_resources():
             except Exception:
                 pass
     
-    time.sleep(0.5)
+    sleep_ref(0.5)
     for item in _tracked_profiles:
         if item["process"].poll() is None:
             try:
@@ -184,13 +186,13 @@ def cleanup_resources():
                 )
             except Exception:
                 pass
-        if os.path.exists(item["path"]):
+        if exists_ref(item["path"]):
             for _ in range(10):
                 try:
-                    shutil.rmtree(item["path"])
+                    rmtree_ref(item["path"])
                     break
                 except (PermissionError, OSError):
-                    time.sleep(0.1)
+                    sleep_ref(0.1)
 
     for desktop in _created_desktops:
         try:
@@ -380,7 +382,6 @@ def deploy_profile(url):
     RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{profile_count}"
     PROFILE_PATH = os.path.join(tempfile.gettempdir(), f"run_{RUN_ID}")
 
-    # Lightning-fast directory initialization using Windows Native Robocopy
     subprocess.call(
         ['robocopy', GLOBAL_BASE_PROFILE, PROFILE_PATH, '/MIR'],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -445,7 +446,6 @@ def launch_grid():
     print("[*] Creating baseline user profile template environment...")
     ensure_base_profile_built()
 
-    # Launching async background queue manager
     threading.Thread(target=background_cleanup_worker, daemon=True).start()
 
     print(f"[*] Monitoring grid profiles ({SCREEN_WIDTH}x{PHYSICAL_HEIGHT}). Ready.")
@@ -470,7 +470,10 @@ def launch_grid():
         )
         
         ctypes.windll.user32.AddClipboardFormatListener(GLOBAL_HWND)
-        win32gui.SetTimer(GLOBAL_HWND, TIMER_ID, 1000, None)
+        
+        # Native User32 win32 timer allocation
+        ctypes.windll.user32.SetTimer(GLOBAL_HWND, TIMER_ID, 1000, None)
+        
         win32gui.PumpMessages()
     except Exception as e:
         print(f"[!] Core Win32 execution loop failure: {e}")
