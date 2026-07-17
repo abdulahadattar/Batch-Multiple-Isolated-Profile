@@ -46,10 +46,8 @@ WM_HOTKEY = 0x0312
 TIMER_ID = 1
 HOTKEY_DISPLAY_OFF_ID = 101
 HOTKEY_MANUAL_BLANK_ID = 102
-ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
 DESKTOP_FILE_PATH = os.path.join(os.environ["USERPROFILE"], "Desktop", "profiles.txt")
 GLOBAL_EXTENSION_DIR = r"C:\ChromeGrid\Extension"
-GLOBAL_BASE_PROFILE = r"C:\ChromeGrid\BaseProfile"
 
 # --- SYSTEM NOTIFICATIONS ---
 def send_notification(title, message):
@@ -57,8 +55,8 @@ def send_notification(title, message):
     def _show_toast():
         try:
             toast(title, message, duration="short", audio={"silent": True})
-        except Exception as e:
-            print(f"[!] Notification Error: {e}")
+        except Exception:
+            pass
     threading.Thread(target=_show_toast, daemon=True).start()
 
 # --- RESOURCE MANAGEMENT ---
@@ -108,21 +106,6 @@ def ensure_extension_built():
     with open(os.path.join(GLOBAL_EXTENSION_DIR, "content.js"), "w", encoding="utf-8") as f:
         f.write(content_script)
 
-def ensure_base_profile_built():
-    """Generates the baseline profile layout once to optimize disk operations."""
-    pref_dir = os.path.join(GLOBAL_BASE_PROFILE, "Default")
-    os.makedirs(pref_dir, exist_ok=True)
-    pref_data = {
-        "profile": {
-            "exit_type": "Normal", 
-            "exited_cleanly": True,
-            "default_content_setting_values": {"fullscreen": 2, "popups": 2},
-            "managed_default_content_settings": {"fullscreen": 2, "popups": 2}
-        }
-    }
-    with open(os.path.join(pref_dir, "Preferences"), "w") as f:
-        json.dump(pref_data, f)
-
 def execute_profile_cleanup(path, process):
     """Gracefully terminates browser profiles and securely cleans up directories."""
     if process.poll() is None:
@@ -153,8 +136,8 @@ def background_cleanup_worker():
         path, process = CLEANUP_QUEUE.get()
         try:
             execute_profile_cleanup(path, process)
-        except Exception as e:
-            print(f"[!] Error in background cleanup task: {e}")
+        except Exception:
+            pass
         finally:
             CLEANUP_QUEUE.task_done()
 
@@ -257,8 +240,11 @@ DEVICE_FINGERPRINTS = [
     "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
 ]
 
+# OPTIMIZED FLAG MATRIX: SHIFTS STABLY TO 2D SOFTWARE DRAW OVERHEAD WITHOUT CORE BACKEND CONFLICTS
 OPTIMIZATION_FLAGS = [
-    "--fps-limit=60",
+    "--disable-gpu",                                
+    "--disable-gpu-rasterization",                  
+    "--disable-gl-drawing-for-tests",               
     "--disable-features=UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks,OptimizationHints,Translate",
     "--mute-audio",
     "--disable-audio-output",
@@ -280,14 +266,10 @@ OPTIMIZATION_FLAGS = [
     "--disable-ipc-flooding-protection",
     "--disable-crash-reporter",
     "--disable-in-process-stack-traces",
-    "--force-webrtc-ip-handling-policy=default_public_interface_only",
-    "--disable-webrtc-hw-decoding",
     "--disable-canvas-2d-image-chromium",
     "--disable-smooth-scrolling",
-    "--blink-settings=imagesEnabled=true",
-    "--ignore-gpu-blocklist",
-    "--enable-gpu-rasterization",
-    "--enable-zero-copy"
+    "--blink-settings=imagesEnabled=false,popups=2,fullscreen=2",         
+    '--js-flags="--max-old-space-size=128 --expose-gc"' 
 ]
 
 seen_links = set()
@@ -391,11 +373,9 @@ def deploy_profile(url):
 
     RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{profile_count}"
     PROFILE_PATH = os.path.join(tempfile.gettempdir(), f"run_{RUN_ID}")
-
-    subprocess.call(
-        ['robocopy', GLOBAL_BASE_PROFILE, PROFILE_PATH, '/MIR'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    
+    # 0-BYTE DISK WRITE INITIALIZATION: Dropped robocopy. Chrome self-generates profiles on launch.
+    os.makedirs(PROFILE_PATH, exist_ok=True)
 
     physical_x_pos = desktop_index * PHYSICAL_WIDTH
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
@@ -417,7 +397,9 @@ def deploy_profile(url):
     ]
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
-    process = subprocess.Popen(args, creationflags=ABOVE_NORMAL_PRIORITY_CLASS)
+    
+    # SYSTEM SCHEDULER NORMALIZATION: Clean launch execution without above-normal thread forcing
+    process = subprocess.Popen(args)
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
 
     force_window_to_desktop_and_position(process.pid, current_desktop, physical_x_pos)
@@ -427,32 +409,25 @@ def deploy_profile(url):
 
 def wnd_proc(hwnd, msg, wparam, lparam):
     if msg == WM_CLIPBOARDUPDATE:
-        clipboard_opened = False
-        try:
-            # win32clipboard.OpenClipboard raises an exception on failure and returns None on success.
-            # Evaluating it as a boolean condition 'if OpenClipboard():' caused execution to bypass this block.
-            win32clipboard.OpenClipboard(hwnd)
-            clipboard_opened = True
-            
-            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                raw_data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                if raw_data:
-                    clean_text = raw_data.strip()
-                    # Offload the operational execution to an asynchronous background worker thread.
-                    # This releases the win32 window loop instantly and avoids deadlocking the OS clipboard handler.
-                    threading.Thread(
-                        target=handle_clipboard_input, 
-                        args=(clean_text, DESKTOP_FILE_PATH), 
-                        daemon=True
-                    ).start()
-        except Exception as e:
-            print(f"[!] Clipboard data extraction error: {e}")
-        finally:
-            if clipboard_opened:
+        # ROBUST INTERRUPT RETRY LOOP: Prevents transient locks or access denied failures
+        for _ in range(10):
+            try:
+                win32clipboard.OpenClipboard(hwnd)
                 try:
+                    if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                        raw_data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                        if raw_data:
+                            clean_text = raw_data.strip()
+                            threading.Thread(
+                                target=handle_clipboard_input, 
+                                args=(clean_text, DESKTOP_FILE_PATH), 
+                                daemon=True
+                            ).start()
+                finally:
                     win32clipboard.CloseClipboard()
-                except Exception:
-                    pass
+                break  
+            except Exception:
+                time.sleep(0.01)  
         return 0
         
     elif msg == WM_TIMER:
@@ -478,9 +453,6 @@ def launch_grid():
 
     print("[*] Setting up extension asset rules...")
     ensure_extension_built()
-    
-    print("[*] Creating baseline user profile template environment...")
-    ensure_base_profile_built()
 
     threading.Thread(target=background_cleanup_worker, daemon=True).start()
 
