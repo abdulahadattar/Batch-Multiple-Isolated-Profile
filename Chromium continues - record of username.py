@@ -11,11 +11,11 @@ import atexit
 import shutil
 import threading
 import random
+import queue
 
 # --- DEPENDENCY RESOLUTION ---
 def ensure_dependencies():
     required_packages = {
-        "pyperclip": "pyperclip",
         "pyvda": "pyvda",
         "keyboard": "keyboard",
         "pywin32": "win32gui",
@@ -33,12 +33,22 @@ def ensure_dependencies():
 
 ensure_dependencies()
 
-import pyperclip
 import pyvda
 import keyboard
 import win32gui
 import win32process
+import win32clipboard
+import win32con
 from win11toast import toast
+
+# --- CONSTANTS ---
+WM_CLIPBOARDUPDATE = 0x031D
+WM_TIMER = 0x0113
+TIMER_ID = 1
+ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+DESKTOP_FILE_PATH = os.path.join(os.environ["USERPROFILE"], "Desktop", "profiles.txt")
+GLOBAL_EXTENSION_DIR = r"C:\ChromeGrid\Extension"
+GLOBAL_BASE_PROFILE = r"C:\ChromeGrid\BaseProfile"
 
 # --- SYSTEM NOTIFICATIONS ---
 def send_notification(title, message):
@@ -53,11 +63,12 @@ def send_notification(title, message):
 # --- RESOURCE MANAGEMENT ---
 _tracked_profiles = []
 _created_desktops = []
-GLOBAL_EXTENSION = None
+GLOBAL_HWND = None
+CLEANUP_QUEUE = queue.Queue()
 
-def build_suppression_extension():
-    """Generates a single global runtime presentation adjustment extension."""
-    ext_dir = tempfile.mkdtemp(prefix="chrome_global_ext_")
+def ensure_extension_built():
+    """Generates the runtime presentation extension in a persistent layout once."""
+    os.makedirs(GLOBAL_EXTENSION_DIR, exist_ok=True)
     
     manifest = {
         "manifest_version": 3,
@@ -103,39 +114,109 @@ def build_suppression_extension():
     })();
     """
     
-    with open(os.path.join(ext_dir, "manifest.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(GLOBAL_EXTENSION_DIR, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f)
-    with open(os.path.join(ext_dir, "content.js"), "w", encoding="utf-8") as f:
+    with open(os.path.join(GLOBAL_EXTENSION_DIR, "content.js"), "w", encoding="utf-8") as f:
         f.write(content_script)
         
-    return ext_dir
+    return GLOBAL_EXTENSION_DIR
+
+def ensure_base_profile_built():
+    """Generates the baseline profile layout once to optimize disk operations."""
+    pref_dir = os.path.join(GLOBAL_BASE_PROFILE, "Default")
+    os.makedirs(pref_dir, exist_ok=True)
+    
+    pref_data = {
+        "profile": {
+            "exit_type": "Normal", 
+            "exited_cleanly": True,
+            "default_content_setting_values": {
+                "fullscreen": 2,
+                "popups": 2
+            },
+            "managed_default_content_settings": {
+                "fullscreen": 2,
+                "popups": 2
+            }
+        }
+    }
+    
+    with open(os.path.join(pref_dir, "Preferences"), "w") as f:
+        json.dump(pref_data, f)
+
+def execute_profile_cleanup(path, process):
+    """Deterministic processing logic sequence to close down application processes and remove files."""
+    if process.poll() is None:
+        try:
+            process.terminate()
+            process.wait(timeout=1.0)
+        except (subprocess.TimeoutExpired, Exception):
+            if process.poll() is None:
+                try:
+                    subprocess.call(
+                        ['taskkill', '/F', '/T', '/PID', str(process.pid)], 
+                        stdout=subprocess.DEVNULL, 
+                        stderr=subprocess.DEVNULL
+                    )
+                except Exception:
+                    pass
+
+    if os.path.exists(path):
+        for _ in range(30):
+            try:
+                shutil.rmtree(path)
+                break
+            except (PermissionError, OSError):
+                time.sleep(0.2)
+
+def background_cleanup_worker():
+    """Single long-lived background consumer thread handling the I/O disposal queue."""
+    while True:
+        path, process = CLEANUP_QUEUE.get()
+        try:
+            execute_profile_cleanup(path, process)
+        except Exception as e:
+            print(f"[!] Error in background cleanup task: {e}")
+        finally:
+            CLEANUP_QUEUE.task_done()
 
 def cleanup_resources():
     print("\n[*] Commencing structural resource cleanup...")
-    for item in _tracked_profiles:
+    
+    global GLOBAL_HWND
+    if GLOBAL_HWND:
         try:
-            subprocess.call(
-                ['taskkill', '/F', '/T', '/PID', str(item["process"].pid)], 
-                stdout=subprocess.DEVNULL, 
-                stderr=subprocess.DEVNULL
-            )
+            ctypes.windll.user32.RemoveClipboardFormatListener(GLOBAL_HWND)
+            win32gui.DestroyWindow(GLOBAL_HWND)
         except Exception:
             pass
+
+    for item in _tracked_profiles:
+        if item["process"].poll() is None:
+            try:
+                item["process"].terminate()
+            except Exception:
+                pass
+    
+    time.sleep(0.5)
+    for item in _tracked_profiles:
+        if item["process"].poll() is None:
+            try:
+                subprocess.call(
+                    ['taskkill', '/F', '/T', '/PID', str(item["process"].pid)], 
+                    stdout=subprocess.DEVNULL, 
+                    stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                pass
         
-        # Immediate verification loop until unlocked on shutdown
         if os.path.exists(item["path"]):
-            while True:
+            for _ in range(10):
                 try:
                     shutil.rmtree(item["path"])
                     break
                 except (PermissionError, OSError):
                     time.sleep(0.1)
-            
-    if GLOBAL_EXTENSION and os.path.exists(GLOBAL_EXTENSION):
-        try:
-            shutil.rmtree(GLOBAL_EXTENSION, ignore_errors=True)
-        except Exception:
-            pass
 
     for desktop in _created_desktops:
         try:
@@ -153,25 +234,8 @@ def check_and_clean_dead_profiles():
     
     for item in _tracked_profiles:
         if item["process"].poll() is not None:
-            print(f"[*] Profile window closed by user. Purging temporary session data...")
-            
-            try:
-                subprocess.call(
-                    ['taskkill', '/F', '/T', '/PID', str(item["process"].pid)], 
-                    stdout=subprocess.DEVNULL, 
-                    stderr=subprocess.DEVNULL
-                )
-            except Exception:
-                pass
-            
-            # Lock-checking loop waits dynamically for helper handles to release
-            if os.path.exists(item["path"]):
-                while True:
-                    try:
-                        shutil.rmtree(item["path"])
-                        break
-                    except (PermissionError, OSError):
-                        time.sleep(0.2)
+            print(f"[*] Profile window closed by user. Pushing to global tracking queue...")
+            CLEANUP_QUEUE.put((item["path"], item["process"]))
         else:
             still_active.append(item)
             
@@ -245,11 +309,10 @@ DEVICE_FINGERPRINTS = [
 # --- HARDWARE OPTIMIZATION & RENDERING LIMITATIONS ---
 OPTIMIZATION_FLAGS = [
     "--fps-limit=60",
-    "--disable-features=IsolateOrigins,site-per-process,UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks",
+    "--disable-features=UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks,OptimizationHints,Translate",
     "--mute-audio",
     "--disable-audio-output",
     "--disable-logging",
-    "--disable-dev-shm-usage",
     "--disk-cache-size=0",
     "--media-cache-size=0",
     "--disable-background-timer-throttling",
@@ -272,7 +335,10 @@ OPTIMIZATION_FLAGS = [
     "--disable-webrtc-hw-decoding",
     "--disable-canvas-2d-image-chromium",
     "--disable-smooth-scrolling",
-    "--blink-settings=imagesEnabled=true"
+    "--blink-settings=imagesEnabled=true",
+    "--ignore-gpu-blocklist",
+    "--enable-gpu-rasterization",
+    "--enable-zero-copy"
 ]
 
 seen_links = set()
@@ -282,7 +348,6 @@ profile_count = 0
 desktop_index = 0  
 current_desktop = None
 browser_path = None
-manual_trigger = False
 
 def find_chrome_executable():
     try:
@@ -304,11 +369,33 @@ def toggle_display_off():
     send_notification("Display Status", "Display turned off. Press any key to wake.")
     ctypes.windll.user32.PostMessageW(0xFFFF, 0x0112, 0xF170, 2)
 
+def handle_clipboard_input(clipboard_data, desktop_file_path):
+    """Processes captured clipboard modifications independently."""
+    global profile_count, desktop_index
+    
+    if clipboard_data and (clipboard_data not in seen_links) and (clipboard_data not in seen_usernames):
+        if clipboard_data.startswith("http"):
+            seen_links.add(clipboard_data)
+            print(f"\n[*] Unique link caught: {clipboard_data}")
+            send_notification("Link Caught", "Deploying new browser profile.")
+            deploy_profile(clipboard_data)
+        
+        elif len(clipboard_data) <= 30 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
+            seen_usernames.add(clipboard_data)
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            try:
+                with open(desktop_file_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{timestamp}] {clipboard_data}\n")
+                print(f"[*] Username logged to Desktop: {clipboard_data}")
+                send_notification("Username Saved", f"{clipboard_data}\nSaved to profiles.txt")
+            except Exception as e:
+                print(f"[!] File write error: {e}")
+
 def trigger_manual_blank():
-    global manual_trigger
-    manual_trigger = True
     print("\n[*] Manual shortcut detected. Preparing empty grid profile...")
     send_notification("Profile Deployed", "Manual blank profile initialized.")
+    deploy_profile("about:blank")
 
 def update_console_status(current_number):
     title_text = f"[Grid Monitor Active] Total Profiles: {profile_count} | Next Position: {desktop_index + 1}"
@@ -365,28 +452,14 @@ def deploy_profile(url):
         pass
 
     RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{profile_count}"
-    PROFILE_PATH = tempfile.mkdtemp(prefix=f"run_{RUN_ID}_")
+    PROFILE_PATH = os.path.join(tempfile.gettempdir(), f"run_{RUN_ID}")
 
-    pref_dir = os.path.join(PROFILE_PATH, "Default")
-    os.makedirs(pref_dir, exist_ok=True)
-    
-    pref_data = {
-        "profile": {
-            "exit_type": "Normal", 
-            "exited_cleanly": True,
-            "default_content_setting_values": {
-                "fullscreen": 2,
-                "popups": 2
-            },
-            "managed_default_content_settings": {
-                "fullscreen": 2,
-                "popups": 2
-            }
-        }
-    }
-    
-    with open(os.path.join(pref_dir, "Preferences"), "w") as f:
-        json.dump(pref_data, f)
+    # Use robocopy to mirror the optimized static template profile directory instantly
+    subprocess.call(
+        ['robocopy', GLOBAL_BASE_PROFILE, PROFILE_PATH, '/MIR'],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
     physical_x_pos = desktop_index * PHYSICAL_WIDTH
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
@@ -400,7 +473,7 @@ def deploy_profile(url):
         f"--window-size={LOGICAL_WIDTH},{LOGICAL_HEIGHT}",
         f"--window-position={logical_x_pos},0",
         f"--force-device-scale-factor={SCALE_FACTOR}", 
-        f"--load-extension={GLOBAL_EXTENSION}",
+        f"--load-extension={GLOBAL_EXTENSION_DIR}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
@@ -410,9 +483,7 @@ def deploy_profile(url):
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
     
-    NORMAL_PRIORITY_CLASS = 0x00000020
-    process = subprocess.Popen(args, creationflags=NORMAL_PRIORITY_CLASS)
-    
+    process = subprocess.Popen(args, creationflags=ABOVE_NORMAL_PRIORITY_CLASS)
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
 
     force_window_to_desktop_and_position(process.pid, current_desktop, physical_x_pos)
@@ -420,20 +491,42 @@ def deploy_profile(url):
     profile_count += 1
     desktop_index = (desktop_index + 1) % GRID_SIZE  
     update_console_status(profile_count)
-    time.sleep(1)
+
+def wnd_proc(hwnd, msg, wparam, lparam):
+    if msg == WM_CLIPBOARDUPDATE:
+        try:
+            if win32clipboard.OpenClipboard(hwnd):
+                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                    data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                    if data:
+                        handle_clipboard_input(data.strip(), DESKTOP_FILE_PATH)
+                win32clipboard.CloseClipboard()
+        except Exception as e:
+            print(f"[!] Clipboard format capture failure: {e}")
+        return 0
+        
+    elif msg == WM_TIMER:
+        if wparam == TIMER_ID:
+            check_and_clean_dead_profiles()
+        return 0
+        
+    return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
 def launch_grid():
-    global browser_path, manual_trigger, GLOBAL_EXTENSION
+    global browser_path, GLOBAL_HWND
     browser_path = find_chrome_executable()
     if not browser_path:
         print("[!] Error: Chrome executable missing.")
         return
 
-    # Initialize the extension directory exactly once globally
-    print("[*] Compiling global presentation adjustments...")
-    GLOBAL_EXTENSION = build_suppression_extension()
+    print("[*] Initializing extension profile rules...")
+    ensure_extension_built()
+    
+    print("[*] Initializing master baseline user profile environment...")
+    ensure_base_profile_built()
 
-    desktop_file_path = os.path.join(os.environ["USERPROFILE"], "Desktop", "profiles.txt")
+    # Spawning the background task execution queue worker thread
+    threading.Thread(target=background_cleanup_worker, daemon=True).start()
 
     print(f"[*] Monitoring grid profiles ({SCREEN_WIDTH}x{PHYSICAL_HEIGHT}). Ready.")
     update_console_status(0)
@@ -441,44 +534,27 @@ def launch_grid():
     keyboard.add_hotkey('ctrl+alt+`', toggle_display_off)
     keyboard.add_hotkey('ctrl+alt+n', trigger_manual_blank)
 
+    wc = win32gui.WNDCLASS()
+    wc.lpfnWndProc = wnd_proc
+    wc.lpszClassName = "ChromeGridListenerWindow"
+    wc.hInstance = win32gui.GetModuleHandle(None)
+    
     try:
-        while True:
-            check_and_clean_dead_profiles()
+        try:
+            class_atom = win32gui.RegisterClass(wc)
+        except win32gui.error:
+            class_atom = win32gui.GetClassInfo(wc.hInstance, wc.lpszClassName)[0]
 
-            if manual_trigger:
-                manual_trigger = False
-                deploy_profile("about:blank")
-                continue
-
-            try:
-                clipboard_data = pyperclip.paste().strip()
-            except Exception:
-                clipboard_data = ""
-
-            if clipboard_data and (clipboard_data not in seen_links) and (clipboard_data not in seen_usernames):
-                
-                if clipboard_data.startswith("http"):
-                    seen_links.add(clipboard_data)
-                    print(f"\n[*] Unique link caught: {clipboard_data}")
-                    send_notification("Link Caught", "Deploying new browser profile.")
-                    deploy_profile(clipboard_data)
-                
-                elif len(clipboard_data) <= 30 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
-                    seen_usernames.add(clipboard_data)
-                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    try:
-                        with open(desktop_file_path, "a", encoding="utf-8") as f:
-                            f.write(f"[{timestamp}] {clipboard_data}\n")
-                        print(f"[*] Username logged to Desktop: {clipboard_data}")
-                        send_notification("Username Saved", f"{clipboard_data}\nSaved to profiles.txt")
-                    except Exception as e:
-                        print(f"[!] File write error: {e}")
-
-            time.sleep(1) 
-            
-    except KeyboardInterrupt:
-        pass
+        GLOBAL_HWND = win32gui.CreateWindow(
+            class_atom, "Grid Listener", 0, 0, 0, 0, 0, 0, 0, wc.hInstance, None
+        )
+        
+        ctypes.windll.user32.AddClipboardFormatListener(GLOBAL_HWND)
+        win32gui.SetTimer(GLOBAL_HWND, TIMER_ID, 1000, None)
+        
+        win32gui.PumpMessages()
+    except Exception as e:
+        print(f"[!] Core Win32 context execution initialization failed: {e}")
 
 if __name__ == "__main__":
     launch_grid()
