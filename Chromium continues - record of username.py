@@ -10,6 +10,7 @@ import tempfile
 import atexit
 import shutil
 import threading
+import random
 
 # --- DEPENDENCY RESOLUTION ---
 def ensure_dependencies():
@@ -58,7 +59,6 @@ def cleanup_resources():
     print("\n[*] Commencing structural resource cleanup...")
     for item in _tracked_profiles:
         try:
-            # Recursive process tree termination to kill zombie renderer/GPU children
             subprocess.call(
                 ['taskkill', '/F', '/T', '/PID', str(item["process"].pid)], 
                 stdout=subprocess.DEVNULL, 
@@ -71,7 +71,6 @@ def cleanup_resources():
         except Exception:
             pass
             
-    # Revert environment by removing dynamically created Virtual Desktops
     for desktop in _created_desktops:
         try:
             desktop.remove()
@@ -174,54 +173,44 @@ DEVICE_FINGERPRINTS = [
 
 # --- HARDWARE OPTIMIZATION & RENDERING LIMITATIONS ---
 OPTIMIZATION_FLAGS = [
-    "--fps-limit=60",                                  
-    "--disable-gpu-vsync",                             
-    "--ignore-gpu-blocklist",                          
-    "--use-angle=d3d11",                               
+    "--fps-limit=60",
+    "--disable-gpu-vsync",
+    "--ignore-gpu-blocklist",
+    "--use-angle=vulkan",
     "--disable-site-isolation-trials",
-    "--disable-features=IsolateOrigins,site-per-process,UserAgentClientHint",
+    "--disable-features=IsolateOrigins,site-per-process,UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks",
     "--mute-audio",
-    "--disable-audio-output",                          
+    "--disable-audio-output",
     "--disable-logging",
     "--disable-dev-shm-usage",
-    "--disk-cache-size=0",                             
+    "--disk-cache-size=0",
     "--media-cache-size=0",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
-    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks", 
     "--enable-gpu",
     "--enable-webgl",
     "--enable-gpu-rasterization",
     "--enable-gpu-compositing",
-    "--disable-software-rasterizer",                   
+    "--disable-software-rasterizer",
     "--enable-features=Touch,PointerEvent,MobileLayout",
     "--disable-extensions",
-    "--disable-fullscreen",                             # Basic F11 disabling
-    "--disable-blink-features=Fullscreen",              # Strict HTML5 API blocking
-    "--no-sandbox",                                    
-    "--disable-component-update",     
+    "--disable-fullscreen",
+    "--disable-blink-features=Fullscreen",
+    "--no-sandbox",
+    "--disable-component-update",
     "--disable-background-networking",
     "--no-proxy-server",
     "--disable-breakpad",
     "--disable-ipc-flooding-protection",
-    "--disable-threaded-scrolling",                    
-    
-    "--disable-gl-extensions",                         
-    "--disable-ext-canvas2d-dynamic-rendering",        
-    "--disable-canvas-aa",                             
-    "--disable-canvas-2d-image-chromium",              
-    "--disable-composited-antialiasing",               
-    "--disable-smooth-scrolling",                      
-
     "--disable-crash-reporter",
     "--disable-in-process-stack-traces",
     "--crash-dumps-dir=NUL",
     "--force-webrtc-ip-handling-policy=default_public_interface_only",
     "--disable-webrtc-hw-decoding",
-    
-    '--js-flags="--max-old-space-size=256 --expose-gc --auto-gc"',
-    '--blink-settings=imagesEnabled=true',             
+    "--disable-canvas-2d-image-chromium",
+    "--disable-smooth-scrolling",
+    "--blink-settings=imagesEnabled=true"
 ]
 
 seen_links = set()
@@ -304,7 +293,6 @@ def force_window_to_desktop_and_position(pid, target_desktop, target_x):
 def deploy_profile(url):
     global profile_count, desktop_index, current_desktop
     
-    # Initiates a new desktop for the very first launch, OR when grid capacity hits 4
     if current_desktop is None or (profile_count > 0 and desktop_index == 0):
         current_desktop = create_and_switch_desktop()
         time.sleep(1.2)
@@ -320,7 +308,6 @@ def deploy_profile(url):
     pref_dir = os.path.join(PROFILE_PATH, "Default")
     os.makedirs(pref_dir, exist_ok=True)
     
-    # 2 = Block. This enforces strict denial for Fullscreen and Popup requests via API.
     pref_data = {
         "profile": {
             "exit_type": "Normal", 
@@ -342,7 +329,7 @@ def deploy_profile(url):
     physical_x_pos = desktop_index * PHYSICAL_WIDTH
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
     
-    current_ua = DEVICE_FINGERPRINTS[profile_count % len(DEVICE_FINGERPRINTS)]
+    current_ua = random.choice(DEVICE_FINGERPRINTS)
     
     args = [
         browser_path,
@@ -360,8 +347,8 @@ def deploy_profile(url):
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
     
-    ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
-    process = subprocess.Popen(args, creationflags=ABOVE_NORMAL_PRIORITY_CLASS)
+    NORMAL_PRIORITY_CLASS = 0x00000020
+    process = subprocess.Popen(args, creationflags=NORMAL_PRIORITY_CLASS)
     
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
 
@@ -409,7 +396,6 @@ def launch_grid():
                     send_notification("Link Caught", "Deploying new browser profile.")
                     deploy_profile(clipboard_data)
                 
-                # Strict alphanumeric check prevents false data logging
                 elif len(clipboard_data) <= 50 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
                     seen_usernames.add(clipboard_data)
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
