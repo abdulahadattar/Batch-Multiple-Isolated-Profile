@@ -475,7 +475,7 @@ def launch_grid():
                     except Exception as e:
                         print(f"[!] File write error: {e}")
 
-            time.sleep(0.5) 
+            time.sleep(1) 
             
     except KeyboardInterrupt:
         pass
