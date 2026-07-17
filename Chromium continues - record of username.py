@@ -179,7 +179,7 @@ OPTIMIZATION_FLAGS = [
     "--ignore-gpu-blocklist",                          
     "--use-angle=d3d11",                               
     "--disable-site-isolation-trials",
-    "--disable-features=IsolateOrigins,site-per-process",
+    "--disable-features=IsolateOrigins,site-per-process,UserAgentClientHint",
     "--mute-audio",
     "--disable-audio-output",                          
     "--disable-logging",
@@ -213,8 +213,14 @@ OPTIMIZATION_FLAGS = [
     "--disable-canvas-2d-image-chromium",              
     "--disable-composited-antialiasing",               
     "--disable-smooth-scrolling",                      
+
+    "--disable-crash-reporter",
+    "--disable-in-process-stack-traces",
+    "--crash-dumps-dir=NUL",
+    "--force-webrtc-ip-handling-policy=default_public_interface_only",
+    "--disable-webrtc-hw-decoding",
     
-    '--js-flags="--max-old-space-size=256 --expose-gc"',
+    '--js-flags="--max-old-space-size=256 --expose-gc --auto-gc"',
     '--blink-settings=imagesEnabled=true',             
 ]
 
