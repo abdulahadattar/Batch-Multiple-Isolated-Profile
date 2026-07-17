@@ -48,7 +48,7 @@ def send_notification(title, message):
             toast(title, message, duration="short", audio={"silent": True})
         except Exception as e:
             print(f"[!] Notification Error: {e}")
-            
+            f
     threading.Thread(target=_show_toast, daemon=True).start()
 
 # --- RESOURCE MANAGEMENT ---
@@ -469,7 +469,7 @@ def launch_grid():
                     send_notification("Link Caught", "Deploying new browser profile.")
                     deploy_profile(clipboard_data)
                 
-                elif len(clipboard_data) <= 50 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
+                elif len(clipboard_data) <= 30 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
                     seen_usernames.add(clipboard_data)
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
@@ -481,7 +481,7 @@ def launch_grid():
                     except Exception as e:
                         print(f"[!] File write error: {e}")
 
-            time.sleep(0.3) 
+            time.sleep(1) 
             
     except KeyboardInterrupt:
         pass
