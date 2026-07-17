@@ -116,7 +116,7 @@ def check_and_clean_dead_profiles():
 # --- DISPLAY METRICS & CONFIGURATION ---
 GRID_SIZE = 4
 COLUMNS = 4
-SCALE_FACTOR = 1
+SCALE_FACTOR = 0.8
 
 try:
     ctypes.windll.user32.SetProcessDPIAware()
