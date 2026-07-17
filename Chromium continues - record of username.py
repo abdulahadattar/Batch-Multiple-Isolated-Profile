@@ -237,14 +237,14 @@ def find_chrome_executable():
     return None
 
 def build_suppression_extension():
-    """Generates a dynamic injection extension to eliminate installation prompts and in-game bonus popups."""
+    """Generates a dynamic injection extension to force native application variables and intercept display overrides."""
     ext_dir = tempfile.mkdtemp(prefix="chrome_mod_ext_")
     _tracked_extensions.append(ext_dir)
     
     manifest = {
         "manifest_version": 3,
-        "name": "Runtime Suppression Framework",
-        "version": "1.2",
+        "name": "App Environment Mutator",
+        "version": "1.3",
         "content_scripts": [{
             "matches": ["<all_urls>"],
             "js": ["content.js"],
@@ -254,51 +254,66 @@ def build_suppression_extension():
     
     content_script = """
     (function() {
-        // Enforce application runtime configuration hooks
-        Object.defineProperty(navigator, 'standalone', { get: () => true });
-        
-        const injectGlobalState = () => {
+        // --- HYBRID APP ENVIRONMENT EMULATION ---
+        // Force key global variables used by web wrappers to confirm app installation status
+        const forceNativeFlags = () => {
             window.isNativeApp = true;
-            window.webkit = window.webkit || {};
-            window.webkit.messageHandlers = window.webkit.messageHandlers || {
-                JSBridge: { postMessage: () => {} }
+            window.isApp = true;
+            window.APP_MODE = true;
+            window.NativeBridge = window.NativeBridge || { postMessage: () => {} };
+            
+            if (!window.webkit) window.webkit = {};
+            if (!window.webkit.messageHandlers) window.webkit.messageHandlers = {};
+            if (!window.webkit.messageHandlers.JSBridge) {
+                window.webkit.messageHandlers.JSBridge = { postMessage: () => {} };
+            }
+
+            // Spoof CSS media queries looking for standalone PWA configurations
+            Object.defineProperty(navigator, 'standalone', { get: () => true });
+            
+            // Emulate standard display-mode matching queries
+            const originalMatchMedia = window.matchMedia;
+            window.matchMedia = function(query) {
+                if (query.includes('display-mode: standalone') || query.includes('display-mode: app')) {
+                    return { matches: true, media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {} };
+                }
+                return originalMatchMedia.call(window, query);
             };
         };
-        injectGlobalState();
-        window.addEventListener('DOMContentLoaded', injectGlobalState);
 
+        forceNativeFlags();
+        window.addEventListener('DOMContentLoaded', forceNativeFlags);
+        
+        // Prevent default application installation prompt intercepts
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
         });
 
-        // Expanded target tree scanning parameters to catch graphics-only popups without target text match
-        const targets = [
+        // --- STRUCTURAL MODAL PURGE ---
+        const structuralSelectors = [
             'div[class*="download" i]', 'div[id*="download" i]',
             'div[class*="modal" i]', 'div[class*="popup" i]',
             'div[class*="mask" i]', 'div[class*="overlay" i]',
             'div[class*="bonus" i]', 'div[id*="bonus" i]',
-            'div[class*="award" i]', 'div[class*="gift" i]',
-            'div[class*="dialog" i]', 'div[class*="window" i]'
+            'div[class*="award" i]', 'div[class*="gift" i]'
         ];
 
         const executeTargetedPurge = () => {
-            targets.forEach(selector => {
+            structuralSelectors.forEach(selector => {
                 document.querySelectorAll(selector).forEach(node => {
                     const style = window.getComputedStyle(node);
-                    const hasHighZIndex = parseInt(style.zIndex, 10) > 100;
-                    const isFixedOrAbsolute = style.position === 'fixed' || style.position === 'absolute';
-                    const contentText = node.textContent.toLowerCase();
+                    const zIndex = parseInt(style.zIndex, 10);
+                    const textContent = node.textContent.toLowerCase();
 
-                    // Remove if matching words exist OR if it is a full-screen dynamic interceptor mask layout
                     if (
-                        contentText.includes('download') || 
-                        contentText.includes('app') || 
-                        contentText.includes('rs30') || 
-                        contentText.includes('bonus') || 
-                        contentText.includes('receive') ||
-                        (isFixedOrAbsolute && hasHighZIndex && (style.width === window.innerWidth + 'px' || node.className.toLowerCase().includes('mask')))
+                        textContent.includes('download') || 
+                        textContent.includes('app') || 
+                        textContent.includes('rs30') || 
+                        textContent.includes('bonus') || 
+                        textContent.includes('receive') ||
+                        (zIndex > 50 && (style.position === 'fixed' || style.position === 'absolute'))
                     ) {
-                        node.style.display = 'none';
+                        node.style.setProperty('display', 'none', 'important');
                         node.remove();
                     }
                 });
@@ -424,12 +439,12 @@ def deploy_profile(url):
         f"--window-position={logical_x_pos},0",
         f"--force-device-scale-factor={SCALE_FACTOR}", 
         f"--load-extension={runtime_extension}",
-        f"--disable-extensions-except={runtime_extension}", # Forces extension override rules in strict layouts
+        f"--disable-extensions-except={runtime_extension}", 
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
         *OPTIMIZATION_FLAGS,
-        f"--app={url}" # Forces clean headless border frame architecture execution rules natively
+        f"--app={url}" 
     ]
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
