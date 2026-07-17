@@ -174,9 +174,6 @@ DEVICE_FINGERPRINTS = [
 # --- HARDWARE OPTIMIZATION & RENDERING LIMITATIONS ---
 OPTIMIZATION_FLAGS = [
     "--fps-limit=60",
-    "--disable-gpu-vsync",
-    "--ignore-gpu-blocklist",
-    "--use-angle=vulkan",
     "--disable-site-isolation-trials",
     "--disable-features=IsolateOrigins,site-per-process,UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks",
     "--mute-audio",
@@ -188,11 +185,6 @@ OPTIMIZATION_FLAGS = [
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
-    "--enable-gpu",
-    "--enable-webgl",
-    "--enable-gpu-rasterization",
-    "--enable-gpu-compositing",
-    "--disable-software-rasterizer",
     "--enable-features=Touch,PointerEvent,MobileLayout",
     "--disable-extensions",
     "--disable-fullscreen",
