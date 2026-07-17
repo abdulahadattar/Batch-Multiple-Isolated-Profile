@@ -69,7 +69,6 @@ CLEANUP_QUEUE = queue.Queue()
 def ensure_extension_built():
     """Generates the runtime presentation extension in a persistent layout once."""
     os.makedirs(GLOBAL_EXTENSION_DIR, exist_ok=True)
-    
     manifest = {
         "manifest_version": 3,
         "name": "Runtime Presentation Adjustment",
@@ -80,7 +79,6 @@ def ensure_extension_built():
             "run_at": "document_start"
         }]
     }
-    
     content_script = """
     (function() {
         const exclusionSelectors = [
@@ -88,7 +86,6 @@ def ensure_extension_built():
             'div[class*="mask" i]', 'div[class*="overlay" i]',
             'div[class*="award" i]', 'div[class*="gift" i]'
         ];
-
         const executeTargetedPurge = () => {
             exclusionSelectors.forEach(selector => {
                 document.querySelectorAll(selector).forEach(node => {
@@ -100,52 +97,33 @@ def ensure_extension_built():
                 });
             });
         };
-
-        const observerInstance = new MutationObserver(() => {
-            executeTargetedPurge();
-        });
-
-        observerInstance.observe(document.documentElement, {
-            childList: true,
-            subtree: true
-        });
-        
+        const observerInstance = new MutationObserver(() => { executeTargetedPurge(); });
+        observerInstance.observe(document.documentElement, { childList: true, subtree: true });
         window.addEventListener('DOMContentLoaded', executeTargetedPurge);
     })();
     """
-    
     with open(os.path.join(GLOBAL_EXTENSION_DIR, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f)
     with open(os.path.join(GLOBAL_EXTENSION_DIR, "content.js"), "w", encoding="utf-8") as f:
         f.write(content_script)
-        
-    return GLOBAL_EXTENSION_DIR
 
 def ensure_base_profile_built():
     """Generates the baseline profile layout once to optimize disk operations."""
     pref_dir = os.path.join(GLOBAL_BASE_PROFILE, "Default")
     os.makedirs(pref_dir, exist_ok=True)
-    
     pref_data = {
         "profile": {
             "exit_type": "Normal", 
             "exited_cleanly": True,
-            "default_content_setting_values": {
-                "fullscreen": 2,
-                "popups": 2
-            },
-            "managed_default_content_settings": {
-                "fullscreen": 2,
-                "popups": 2
-            }
+            "default_content_setting_values": {"fullscreen": 2, "popups": 2},
+            "managed_default_content_settings": {"fullscreen": 2, "popups": 2}
         }
     }
-    
     with open(os.path.join(pref_dir, "Preferences"), "w") as f:
         json.dump(pref_data, f)
 
 def execute_profile_cleanup(path, process):
-    """Deterministic processing logic sequence to close down application processes and remove files."""
+    """Gracefully terminates browser profiles and securely cleans up directories."""
     if process.poll() is None:
         try:
             process.terminate()
@@ -155,14 +133,13 @@ def execute_profile_cleanup(path, process):
                 try:
                     subprocess.call(
                         ['taskkill', '/F', '/T', '/PID', str(process.pid)], 
-                        stdout=subprocess.DEVNULL, 
-                        stderr=subprocess.DEVNULL
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                     )
                 except Exception:
                     pass
 
     if os.path.exists(path):
-        for _ in range(30):
+        for _ in range(30):  # Bounded loop prevents permanent freezes
             try:
                 shutil.rmtree(path)
                 break
@@ -170,7 +147,7 @@ def execute_profile_cleanup(path, process):
                 time.sleep(0.2)
 
 def background_cleanup_worker():
-    """Single long-lived background consumer thread handling the I/O disposal queue."""
+    """Background worker processing file deletions cleanly out of the main thread loop."""
     while True:
         path, process = CLEANUP_QUEUE.get()
         try:
@@ -182,7 +159,6 @@ def background_cleanup_worker():
 
 def cleanup_resources():
     print("\n[*] Commencing structural resource cleanup...")
-    
     global GLOBAL_HWND
     if GLOBAL_HWND:
         try:
@@ -204,12 +180,10 @@ def cleanup_resources():
             try:
                 subprocess.call(
                     ['taskkill', '/F', '/T', '/PID', str(item["process"].pid)], 
-                    stdout=subprocess.DEVNULL, 
-                    stderr=subprocess.DEVNULL
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
             except Exception:
                 pass
-        
         if os.path.exists(item["path"]):
             for _ in range(10):
                 try:
@@ -223,7 +197,6 @@ def cleanup_resources():
             desktop.remove()
         except Exception:
             pass
-            
     print("[*] Cleanup finalized.")
 
 atexit.register(cleanup_resources)
@@ -231,14 +204,12 @@ atexit.register(cleanup_resources)
 def check_and_clean_dead_profiles():
     global _tracked_profiles
     still_active = []
-    
     for item in _tracked_profiles:
         if item["process"].poll() is not None:
-            print(f"[*] Profile window closed by user. Pushing to global tracking queue...")
+            print(f"[*] Profile window closed by user. Pushing to async cleanup queue...")
             CLEANUP_QUEUE.put((item["path"], item["process"]))
         else:
             still_active.append(item)
-            
     _tracked_profiles = still_active
 
 # --- DISPLAY METRICS & CONFIGURATION ---
@@ -253,10 +224,8 @@ except AttributeError:
 
 class RECT(ctypes.Structure):
     _fields_ = [
-        ("left", ctypes.c_long),
-        ("top", ctypes.c_long),
-        ("right", ctypes.c_long),
-        ("bottom", ctypes.c_long)
+        ("left", ctypes.c_long), ("top", ctypes.c_long),
+        ("right", ctypes.c_long), ("bottom", ctypes.c_long)
     ]
 
 def get_work_area():
@@ -266,7 +235,6 @@ def get_work_area():
 
 SCREEN_WIDTH, PHYSICAL_HEIGHT = get_work_area()
 PHYSICAL_WIDTH = SCREEN_WIDTH // COLUMNS
-
 LOGICAL_WIDTH = int(PHYSICAL_WIDTH / SCALE_FACTOR)
 LOGICAL_HEIGHT = int(PHYSICAL_HEIGHT / SCALE_FACTOR)
 
@@ -274,39 +242,9 @@ LOGICAL_HEIGHT = int(PHYSICAL_HEIGHT / SCALE_FACTOR)
 DEVICE_FINGERPRINTS = [
     "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; Pixel 6a) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 12; Pixel 6 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 12; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; SM-F946B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-F731B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-A546B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-A346B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; OnePlus 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; OnePlus 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; IN2023) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; Xiaomi 14 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; Xiaomi 13 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 12; 2201123G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; Redmi Note 12 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 12; Redmi Note 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; POCO F5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 12; POCO X4 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 11; POCO M3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; XT2401-2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; XT2301-4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 12; motorola edge 30 pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; V2250) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; RMX3709) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
 ]
 
-# --- HARDWARE OPTIMIZATION & RENDERING LIMITATIONS ---
 OPTIMIZATION_FLAGS = [
     "--fps-limit=60",
     "--disable-features=UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks,OptimizationHints,Translate",
@@ -330,7 +268,6 @@ OPTIMIZATION_FLAGS = [
     "--disable-ipc-flooding-protection",
     "--disable-crash-reporter",
     "--disable-in-process-stack-traces",
-    "--crash-dumps-dir=NUL",
     "--force-webrtc-ip-handling-policy=default_public_interface_only",
     "--disable-webrtc-hw-decoding",
     "--disable-canvas-2d-image-chromium",
@@ -343,7 +280,6 @@ OPTIMIZATION_FLAGS = [
 
 seen_links = set()
 seen_usernames = set()
-
 profile_count = 0  
 desktop_index = 0  
 current_desktop = None
@@ -357,7 +293,6 @@ def find_chrome_executable():
     except Exception:
         standard_paths = [
             os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
-            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
             os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe")
         ]
         for p in standard_paths:
@@ -370,20 +305,15 @@ def toggle_display_off():
     ctypes.windll.user32.PostMessageW(0xFFFF, 0x0112, 0xF170, 2)
 
 def handle_clipboard_input(clipboard_data, desktop_file_path):
-    """Processes captured clipboard modifications independently."""
-    global profile_count, desktop_index
-    
     if clipboard_data and (clipboard_data not in seen_links) and (clipboard_data not in seen_usernames):
         if clipboard_data.startswith("http"):
             seen_links.add(clipboard_data)
             print(f"\n[*] Unique link caught: {clipboard_data}")
             send_notification("Link Caught", "Deploying new browser profile.")
             deploy_profile(clipboard_data)
-        
         elif len(clipboard_data) <= 30 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
             seen_usernames.add(clipboard_data)
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
             try:
                 with open(desktop_file_path, "a", encoding="utf-8") as f:
                     f.write(f"[{timestamp}] {clipboard_data}\n")
@@ -417,13 +347,11 @@ def force_window_to_desktop_and_position(pid, target_desktop, target_x):
     timeout = 3.0  
     start_time = time.time()
     window_found = False
-    
     while time.time() - start_time < timeout:
         def enum_windows_callback(hwnd, extra):
             nonlocal window_found
             lp_pid = ctypes.c_ulong()
             ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(lp_pid))
-            
             if lp_pid.value == pid and win32gui.IsWindowVisible(hwnd):
                 try:
                     window_view = pyvda.AppView(hwnd)
@@ -433,7 +361,6 @@ def force_window_to_desktop_and_position(pid, target_desktop, target_x):
                 except Exception:
                     pass
             return True
-            
         win32gui.EnumWindows(enum_windows_callback, None)
         if window_found:
             break
@@ -441,7 +368,6 @@ def force_window_to_desktop_and_position(pid, target_desktop, target_x):
 
 def deploy_profile(url):
     global profile_count, desktop_index, current_desktop
-    
     if current_desktop is None or (profile_count > 0 and desktop_index == 0):
         current_desktop = create_and_switch_desktop()
         time.sleep(1.2)
@@ -454,16 +380,14 @@ def deploy_profile(url):
     RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{profile_count}"
     PROFILE_PATH = os.path.join(tempfile.gettempdir(), f"run_{RUN_ID}")
 
-    # Use robocopy to mirror the optimized static template profile directory instantly
+    # Lightning-fast directory initialization using Windows Native Robocopy
     subprocess.call(
         ['robocopy', GLOBAL_BASE_PROFILE, PROFILE_PATH, '/MIR'],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
 
     physical_x_pos = desktop_index * PHYSICAL_WIDTH
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
-    
     current_ua = random.choice(DEVICE_FINGERPRINTS)
     
     args = [
@@ -482,12 +406,10 @@ def deploy_profile(url):
     ]
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
-    
     process = subprocess.Popen(args, creationflags=ABOVE_NORMAL_PRIORITY_CLASS)
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
 
     force_window_to_desktop_and_position(process.pid, current_desktop, physical_x_pos)
-
     profile_count += 1
     desktop_index = (desktop_index + 1) % GRID_SIZE  
     update_console_status(profile_count)
@@ -502,14 +424,12 @@ def wnd_proc(hwnd, msg, wparam, lparam):
                         handle_clipboard_input(data.strip(), DESKTOP_FILE_PATH)
                 win32clipboard.CloseClipboard()
         except Exception as e:
-            print(f"[!] Clipboard format capture failure: {e}")
+            print(f"[!] Clipboard data extraction error: {e}")
         return 0
-        
     elif msg == WM_TIMER:
         if wparam == TIMER_ID:
             check_and_clean_dead_profiles()
         return 0
-        
     return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
 def launch_grid():
@@ -519,13 +439,13 @@ def launch_grid():
         print("[!] Error: Chrome executable missing.")
         return
 
-    print("[*] Initializing extension profile rules...")
+    print("[*] Setting up extension asset rules...")
     ensure_extension_built()
     
-    print("[*] Initializing master baseline user profile environment...")
+    print("[*] Creating baseline user profile template environment...")
     ensure_base_profile_built()
 
-    # Spawning the background task execution queue worker thread
+    # Launching async background queue manager
     threading.Thread(target=background_cleanup_worker, daemon=True).start()
 
     print(f"[*] Monitoring grid profiles ({SCREEN_WIDTH}x{PHYSICAL_HEIGHT}). Ready.")
@@ -551,10 +471,9 @@ def launch_grid():
         
         ctypes.windll.user32.AddClipboardFormatListener(GLOBAL_HWND)
         win32gui.SetTimer(GLOBAL_HWND, TIMER_ID, 1000, None)
-        
         win32gui.PumpMessages()
     except Exception as e:
-        print(f"[!] Core Win32 context execution initialization failed: {e}")
+        print(f"[!] Core Win32 execution loop failure: {e}")
 
 if __name__ == "__main__":
     launch_grid()
