@@ -254,7 +254,7 @@ LOGICAL_HEIGHT = int(PHYSICAL_HEIGHT / SCALE_FACTOR)
 DEVICE_FINGERPRINTS = [
     "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
 ]
 
 OPTIMIZATION_FLAGS = [
@@ -427,29 +427,46 @@ def deploy_profile(url):
 
 def wnd_proc(hwnd, msg, wparam, lparam):
     if msg == WM_CLIPBOARDUPDATE:
+        clipboard_opened = False
         try:
-            # win32clipboard.OpenClipboard returns None on success and raises an exception on failure
+            # win32clipboard.OpenClipboard raises an exception on failure and returns None on success.
+            # Evaluating it as a boolean condition 'if OpenClipboard():' caused execution to bypass this block.
             win32clipboard.OpenClipboard(hwnd)
-            try:
-                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                    data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                    if data:
-                        handle_clipboard_input(data.strip(), DESKTOP_FILE_PATH)
-            finally:
-                win32clipboard.CloseClipboard()
+            clipboard_opened = True
+            
+            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                raw_data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                if raw_data:
+                    clean_text = raw_data.strip()
+                    # Offload the operational execution to an asynchronous background worker thread.
+                    # This releases the win32 window loop instantly and avoids deadlocking the OS clipboard handler.
+                    threading.Thread(
+                        target=handle_clipboard_input, 
+                        args=(clean_text, DESKTOP_FILE_PATH), 
+                        daemon=True
+                    ).start()
         except Exception as e:
             print(f"[!] Clipboard data extraction error: {e}")
+        finally:
+            if clipboard_opened:
+                try:
+                    win32clipboard.CloseClipboard()
+                except Exception:
+                    pass
         return 0
+        
     elif msg == WM_TIMER:
         if wparam == TIMER_ID:
             check_and_clean_dead_profiles()
         return 0
+        
     elif msg == WM_HOTKEY:
         if wparam == HOTKEY_DISPLAY_OFF_ID:
             toggle_display_off()
         elif wparam == HOTKEY_MANUAL_BLANK_ID:
             trigger_manual_blank()
         return 0
+        
     return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
 def launch_grid():
