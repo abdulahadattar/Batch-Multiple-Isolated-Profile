@@ -48,14 +48,67 @@ def send_notification(title, message):
             toast(title, message, duration="short", audio={"silent": True})
         except Exception as e:
             print(f"[!] Notification Error: {e}")
-            
     threading.Thread(target=_show_toast, daemon=True).start()
 
 # --- RESOURCE MANAGEMENT ---
 _tracked_profiles = []
 _created_desktops = []
-_tracked_extensions = []
-_last_deployed_url = "N/A"
+GLOBAL_EXTENSION = None
+
+def build_suppression_extension():
+    """Generates a single global runtime presentation adjustment extension."""
+    ext_dir = tempfile.mkdtemp(prefix="chrome_global_ext_")
+    
+    manifest = {
+        "manifest_version": 3,
+        "name": "Runtime Presentation Adjustment",
+        "version": "1.1",
+        "content_scripts": [{
+            "matches": ["<all_urls>"],
+            "js": ["content.js"],
+            "run_at": "document_start"
+        }]
+    }
+    
+    content_script = """
+    (function() {
+        const exclusionSelectors = [
+            'div[class*="modal" i]', 'div[class*="popup" i]',
+            'div[class*="mask" i]', 'div[class*="overlay" i]',
+            'div[class*="award" i]', 'div[class*="gift" i]'
+        ];
+
+        const executeTargetedPurge = () => {
+            exclusionSelectors.forEach(selector => {
+                document.querySelectorAll(selector).forEach(node => {
+                    const contentText = node.textContent.toLowerCase();
+                    if (contentText.includes('rs30')) {
+                        node.style.display = 'none';
+                        node.remove();
+                    }
+                });
+            });
+        };
+
+        const observerInstance = new MutationObserver(() => {
+            executeTargetedPurge();
+        });
+
+        observerInstance.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+        
+        window.addEventListener('DOMContentLoaded', executeTargetedPurge);
+    })();
+    """
+    
+    with open(os.path.join(ext_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+    with open(os.path.join(ext_dir, "content.js"), "w", encoding="utf-8") as f:
+        f.write(content_script)
+        
+    return ext_dir
 
 def cleanup_resources():
     print("\n[*] Commencing structural resource cleanup...")
@@ -68,14 +121,19 @@ def cleanup_resources():
             )
         except Exception:
             pass
-        try:
-            shutil.rmtree(item["path"], ignore_errors=True)
-        except Exception:
-            pass
+        
+        # Immediate verification loop until unlocked on shutdown
+        if os.path.exists(item["path"]):
+            while True:
+                try:
+                    shutil.rmtree(item["path"])
+                    break
+                except (PermissionError, OSError):
+                    time.sleep(0.1)
             
-    for ext_path in _tracked_extensions:
+    if GLOBAL_EXTENSION and os.path.exists(GLOBAL_EXTENSION):
         try:
-            shutil.rmtree(ext_path, ignore_errors=True)
+            shutil.rmtree(GLOBAL_EXTENSION, ignore_errors=True)
         except Exception:
             pass
 
@@ -96,6 +154,7 @@ def check_and_clean_dead_profiles():
     for item in _tracked_profiles:
         if item["process"].poll() is not None:
             print(f"[*] Profile window closed by user. Purging temporary session data...")
+            
             try:
                 subprocess.call(
                     ['taskkill', '/F', '/T', '/PID', str(item["process"].pid)], 
@@ -104,11 +163,15 @@ def check_and_clean_dead_profiles():
                 )
             except Exception:
                 pass
-            try:
-                shutil.rmtree(item["path"], ignore_errors=True)
-            except Exception:
-                still_active.append(item)
-                continue
+            
+            # Lock-checking loop waits dynamically for helper handles to release
+            if os.path.exists(item["path"]):
+                while True:
+                    try:
+                        shutil.rmtree(item["path"])
+                        break
+                    except (PermissionError, OSError):
+                        time.sleep(0.2)
         else:
             still_active.append(item)
             
@@ -117,7 +180,7 @@ def check_and_clean_dead_profiles():
 # --- DISPLAY METRICS & CONFIGURATION ---
 GRID_SIZE = 4
 COLUMNS = 4
-SCALE_FACTOR = 1
+SCALE_FACTOR = 0.8
 
 try:
     ctypes.windll.user32.SetProcessDPIAware()
@@ -182,7 +245,6 @@ DEVICE_FINGERPRINTS = [
 # --- HARDWARE OPTIMIZATION & RENDERING LIMITATIONS ---
 OPTIMIZATION_FLAGS = [
     "--fps-limit=60",
-    "--disable-site-isolation-trials",
     "--disable-features=IsolateOrigins,site-per-process,UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks",
     "--mute-audio",
     "--disable-audio-output",
@@ -194,6 +256,7 @@ OPTIMIZATION_FLAGS = [
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--enable-features=Touch,PointerEvent,MobileLayout",
+    "--disable-extensions-file-access-check",
     "--disable-fullscreen",
     "--disable-blink-features=Fullscreen",
     "--no-sandbox",
@@ -235,110 +298,6 @@ def find_chrome_executable():
         for p in standard_paths:
             if os.path.exists(p): return p
     return None
-
-def build_suppression_extension():
-    """Generates a dynamic injection extension to force native application variables and intercept display overrides."""
-    ext_dir = tempfile.mkdtemp(prefix="chrome_mod_ext_")
-    _tracked_extensions.append(ext_dir)
-    
-    manifest = {
-        "manifest_version": 3,
-        "name": "App Environment Mutator",
-        "version": "1.3",
-        "content_scripts": [{
-            "matches": ["<all_urls>"],
-            "js": ["content.js"],
-            "run_at": "document_start"
-        }]
-    }
-    
-    content_script = """
-    (function() {
-        // --- HYBRID APP ENVIRONMENT EMULATION ---
-        // Force key global variables used by web wrappers to confirm app installation status
-        const forceNativeFlags = () => {
-            window.isNativeApp = true;
-            window.isApp = true;
-            window.APP_MODE = true;
-            window.NativeBridge = window.NativeBridge || { postMessage: () => {} };
-            
-            if (!window.webkit) window.webkit = {};
-            if (!window.webkit.messageHandlers) window.webkit.messageHandlers = {};
-            if (!window.webkit.messageHandlers.JSBridge) {
-                window.webkit.messageHandlers.JSBridge = { postMessage: () => {} };
-            }
-
-            // Spoof CSS media queries looking for standalone PWA configurations
-            Object.defineProperty(navigator, 'standalone', { get: () => true });
-            
-            // Emulate standard display-mode matching queries
-            const originalMatchMedia = window.matchMedia;
-            window.matchMedia = function(query) {
-                if (query.includes('display-mode: standalone') || query.includes('display-mode: app')) {
-                    return { matches: true, media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {} };
-                }
-                return originalMatchMedia.call(window, query);
-            };
-        };
-
-        forceNativeFlags();
-        window.addEventListener('DOMContentLoaded', forceNativeFlags);
-        
-        // Prevent default application installation prompt intercepts
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault();
-        });
-
-        // --- STRUCTURAL MODAL PURGE ---
-        const structuralSelectors = [
-            'div[class*="download" i]', 'div[id*="download" i]',
-            'div[class*="modal" i]', 'div[class*="popup" i]',
-            'div[class*="mask" i]', 'div[class*="overlay" i]',
-            'div[class*="bonus" i]', 'div[id*="bonus" i]',
-            'div[class*="award" i]', 'div[class*="gift" i]'
-        ];
-
-        const executeTargetedPurge = () => {
-            structuralSelectors.forEach(selector => {
-                document.querySelectorAll(selector).forEach(node => {
-                    const style = window.getComputedStyle(node);
-                    const zIndex = parseInt(style.zIndex, 10);
-                    const textContent = node.textContent.toLowerCase();
-
-                    if (
-                        textContent.includes('download') || 
-                        textContent.includes('app') || 
-                        textContent.includes('rs30') || 
-                        textContent.includes('bonus') || 
-                        textContent.includes('receive') ||
-                        (zIndex > 50 && (style.position === 'fixed' || style.position === 'absolute'))
-                    ) {
-                        node.style.setProperty('display', 'none', 'important');
-                        node.remove();
-                    }
-                });
-            });
-        };
-
-        const observerInstance = new MutationObserver(() => {
-            executeTargetedPurge();
-        });
-
-        observerInstance.observe(document.documentElement, {
-            childList: true,
-            subtree: true
-        });
-        
-        window.addEventListener('DOMContentLoaded', executeTargetedPurge);
-    })();
-    """
-    
-    with open(os.path.join(ext_dir, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(manifest, f)
-    with open(os.path.join(ext_dir, "content.js"), "w", encoding="utf-8") as f:
-        f.write(content_script)
-        
-    return ext_dir
 
 def toggle_display_off():
     print("\n[*] Display off signal sent via hotkey. Press any physical key or mouse click to wake.")
@@ -394,7 +353,7 @@ def force_window_to_desktop_and_position(pid, target_desktop, target_x):
         time.sleep(0.1)
 
 def deploy_profile(url):
-    global profile_count, desktop_index, current_desktop, _last_deployed_url
+    global profile_count, desktop_index, current_desktop
     
     if current_desktop is None or (profile_count > 0 and desktop_index == 0):
         current_desktop = create_and_switch_desktop()
@@ -415,8 +374,14 @@ def deploy_profile(url):
         "profile": {
             "exit_type": "Normal", 
             "exited_cleanly": True,
-            "default_content_setting_values": {"fullscreen": 2, "popups": 2},
-            "managed_default_content_settings": {"fullscreen": 2, "popups": 2}
+            "default_content_setting_values": {
+                "fullscreen": 2,
+                "popups": 2
+            },
+            "managed_default_content_settings": {
+                "fullscreen": 2,
+                "popups": 2
+            }
         }
     }
     
@@ -427,9 +392,6 @@ def deploy_profile(url):
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
     
     current_ua = random.choice(DEVICE_FINGERPRINTS)
-    runtime_extension = build_suppression_extension()
-    
-    _last_deployed_url = url
     
     args = [
         browser_path,
@@ -438,13 +400,12 @@ def deploy_profile(url):
         f"--window-size={LOGICAL_WIDTH},{LOGICAL_HEIGHT}",
         f"--window-position={logical_x_pos},0",
         f"--force-device-scale-factor={SCALE_FACTOR}", 
-        f"--load-extension={runtime_extension}",
-        f"--disable-extensions-except={runtime_extension}", 
+        f"--load-extension={GLOBAL_EXTENSION}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
         *OPTIMIZATION_FLAGS,
-        f"--app={url}" 
+        url
     ]
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
@@ -453,19 +414,24 @@ def deploy_profile(url):
     process = subprocess.Popen(args, creationflags=NORMAL_PRIORITY_CLASS)
     
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
+
     force_window_to_desktop_and_position(process.pid, current_desktop, physical_x_pos)
 
     profile_count += 1
     desktop_index = (desktop_index + 1) % GRID_SIZE  
     update_console_status(profile_count)
-    time.sleep(1.5)
+    time.sleep(1)
 
 def launch_grid():
-    global browser_path, manual_trigger, _last_deployed_url
+    global browser_path, manual_trigger, GLOBAL_EXTENSION
     browser_path = find_chrome_executable()
     if not browser_path:
         print("[!] Error: Chrome executable missing.")
         return
+
+    # Initialize the extension directory exactly once globally
+    print("[*] Compiling global presentation adjustments...")
+    GLOBAL_EXTENSION = build_suppression_extension()
 
     desktop_file_path = os.path.join(os.environ["USERPROFILE"], "Desktop", "profiles.txt")
 
@@ -475,15 +441,9 @@ def launch_grid():
     keyboard.add_hotkey('ctrl+alt+`', toggle_display_off)
     keyboard.add_hotkey('ctrl+alt+n', trigger_manual_blank)
 
-    profile_check_ticker = 0
-
     try:
         while True:
-            if profile_check_ticker >= 10:
-                check_and_clean_dead_profiles()
-                profile_check_ticker = 0
-            else:
-                profile_check_ticker += 1
+            check_and_clean_dead_profiles()
 
             if manual_trigger:
                 manual_trigger = False
@@ -499,24 +459,23 @@ def launch_grid():
                 
                 if clipboard_data.startswith("http"):
                     seen_links.add(clipboard_data)
-                    _last_deployed_url = clipboard_data  
                     print(f"\n[*] Unique link caught: {clipboard_data}")
                     send_notification("Link Caught", "Deploying new browser profile.")
                     deploy_profile(clipboard_data)
                 
-                elif len(clipboard_data) <= 50 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
+                elif len(clipboard_data) <= 30 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
                     seen_usernames.add(clipboard_data)
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
                     try:
                         with open(desktop_file_path, "a", encoding="utf-8") as f:
-                            f.write(f"[{timestamp}] URL Context: {_last_deployed_url} | User: {clipboard_data}\n")
-                        print(f"[*] Username logged with domain relationship: {clipboard_data} -> {_last_deployed_url}")
-                        send_notification("Username Saved", f"User: {clipboard_data}\nContext: {_last_deployed_url}")
+                            f.write(f"[{timestamp}] {clipboard_data}\n")
+                        print(f"[*] Username logged to Desktop: {clipboard_data}")
+                        send_notification("Username Saved", f"{clipboard_data}\nSaved to profiles.txt")
                     except Exception as e:
                         print(f"[!] File write error: {e}")
 
-            time.sleep(1.0) 
+            time.sleep(0.5) 
             
     except KeyboardInterrupt:
         pass
