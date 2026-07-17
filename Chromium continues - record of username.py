@@ -254,7 +254,7 @@ LOGICAL_HEIGHT = int(PHYSICAL_HEIGHT / SCALE_FACTOR)
 DEVICE_FINGERPRINTS = [
     "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 ]
 
 OPTIMIZATION_FLAGS = [
@@ -428,11 +428,14 @@ def deploy_profile(url):
 def wnd_proc(hwnd, msg, wparam, lparam):
     if msg == WM_CLIPBOARDUPDATE:
         try:
-            if win32clipboard.OpenClipboard(hwnd):
+            # win32clipboard.OpenClipboard returns None on success and raises an exception on failure
+            win32clipboard.OpenClipboard(hwnd)
+            try:
                 if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
                     data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
                     if data:
                         handle_clipboard_input(data.strip(), DESKTOP_FILE_PATH)
+            finally:
                 win32clipboard.CloseClipboard()
         except Exception as e:
             print(f"[!] Clipboard data extraction error: {e}")
@@ -485,11 +488,10 @@ def launch_grid():
         ctypes.windll.user32.AddClipboardFormatListener(GLOBAL_HWND)
         ctypes.windll.user32.SetTimer(GLOBAL_HWND, TIMER_ID, 1000, None)
         
-        # Native RegisterHotKey configurations eliminate the high-level keyboard package crash entirely
         MOD_CONTROL = 0x0002
         MOD_ALT = 0x0001
-        VK_OEM_3 = 0xC0  # Backtick / Tilde mechanical key layout constant
-        VK_N = 0x4E      # N key constant
+        VK_OEM_3 = 0xC0  
+        VK_N = 0x4E      
         
         ctypes.windll.user32.RegisterHotKey(GLOBAL_HWND, HOTKEY_DISPLAY_OFF_ID, MOD_CONTROL | MOD_ALT, VK_OEM_3)
         ctypes.windll.user32.RegisterHotKey(GLOBAL_HWND, HOTKEY_MANUAL_BLANK_ID, MOD_CONTROL | MOD_ALT, VK_N)
