@@ -246,8 +246,6 @@ OPTIMIZATION_FLAGS = [
     "--mute-audio",
     "--disable-audio-output",
     "--disable-logging",
-    "--disk-cache-size=0",
-    "--media-cache-size=0",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
