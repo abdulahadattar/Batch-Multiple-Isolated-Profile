@@ -241,10 +241,7 @@ DEVICE_FINGERPRINTS = [
 ]
 
 # OPTIMIZED FLAG MATRIX: SHIFTS STABLY TO 2D SOFTWARE DRAW OVERHEAD WITHOUT CORE BACKEND CONFLICTS
-OPTIMIZATION_FLAGS = [
-    "--disable-gpu",                                
-    "--disable-gpu-rasterization",                  
-    "--disable-gl-drawing-for-tests",               
+OPTIMIZATION_FLAGS = [                                                                      
     "--disable-features=UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks,OptimizationHints,Translate",
     "--mute-audio",
     "--disable-audio-output",
@@ -256,8 +253,7 @@ OPTIMIZATION_FLAGS = [
     "--disable-renderer-backgrounding",
     "--enable-features=Touch,PointerEvent,MobileLayout",
     "--disable-extensions-file-access-check",
-    "--disable-fullscreen",
-    "--disable-blink-features=Fullscreen",
+    "--disable-blink-features=Fullscreen",  # Explicitly disables the HTML5 Fullscreen JavaScript API
     "--no-sandbox",
     "--disable-component-update",
     "--disable-background-networking",
@@ -266,10 +262,8 @@ OPTIMIZATION_FLAGS = [
     "--disable-ipc-flooding-protection",
     "--disable-crash-reporter",
     "--disable-in-process-stack-traces",
-    "--disable-canvas-2d-image-chromium",
     "--disable-smooth-scrolling",
-    "--blink-settings=imagesEnabled=false,popups=2,fullscreen=2",         
-    '--js-flags="--max-old-space-size=128 --expose-gc"' 
+    '--js-flags="--max-old-space-size=256 --expose-gc"' 
 ]
 
 seen_links = set()
