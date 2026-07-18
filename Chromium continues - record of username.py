@@ -233,35 +233,46 @@ PHYSICAL_WIDTH = SCREEN_WIDTH // COLUMNS
 LOGICAL_WIDTH = int(PHYSICAL_WIDTH / SCALE_FACTOR)
 LOGICAL_HEIGHT = int(PHYSICAL_HEIGHT / SCALE_FACTOR)
 
-# --- DEVICE FINGERPRINT POOL ---
-DEVICE_FINGERPRINTS = [
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
-]
+# --- SYSTEM-MATCHED USER AGENT ---
+# Matching a standard Windows x64 desktop engine signature prevents the platform mismatch flags triggered by mobile UAs on desktop environments
+UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-# OPTIMIZED FLAG MATRIX: SHIFTS STABLY TO 2D SOFTWARE DRAW OVERHEAD WITHOUT CORE BACKEND CONFLICTS
-OPTIMIZATION_FLAGS = [                                                                      
-    "--disable-features=UserAgentClientHint,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks,OptimizationHints,Translate",
+# SAFE AND BALANCED HARDWARE ENGINE OPTIMIZATION FLAGS (FROM YOUR TRUSTED RUNS)
+OPTIMIZATION_FLAGS = [                                                                        
+    "--fps-limit=60",                          
+    "--disable-gpu-vsync",                      
+    "--ignore-gpu-blocklist",                  
+    "--use-angle=d3d11",                        
+    "--disable-site-isolation-trials",
+    "--disable-features=IsolateOrigins,site-per-process",
     "--mute-audio",
     "--disable-audio-output",
     "--disable-logging",
+    "--disable-dev-shm-usage",
+    "--disk-cache-size=0",
+    "--media-cache-size=0",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
-    "--enable-features=Touch,PointerEvent,MobileLayout",
-    "--disable-extensions-file-access-check",
-    "--disable-blink-features=Fullscreen",  # Explicitly disables the HTML5 Fullscreen JavaScript API
-    "--no-sandbox",
-    "--disable-component-update",
+    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks", 
+    "--enable-gpu",
+    "--enable-webgl",
+    "--enable-gpu-rasterization",
+    "--enable-gpu-compositing",
+    "--disable-software-rasterizer",
+    "--disable-fullscreen",
     "--disable-background-networking",
     "--no-proxy-server",
     "--disable-breakpad",
     "--disable-ipc-flooding-protection",
-    "--disable-crash-reporter",
-    "--disable-in-process-stack-traces",
+    "--disable-threaded-scrolling",
+    "--disable-gl-extensions",
+    "--disable-ext-canvas2d-dynamic-rendering",
+    "--disable-canvas-aa",
+    "--disable-canvas-2d-image-chromium",
+    "--disable-composited-antialiasing",
     "--disable-smooth-scrolling",
-    '--js-flags="--max-old-space-size=256 --expose-gc"' 
+    '--blink-settings=imagesEnabled=true',
 ]
 
 seen_links = set()
@@ -330,6 +341,8 @@ def create_and_switch_desktop():
         return pyvda.VirtualDesktop.current()
 
 def force_window_to_desktop_and_position(pid, target_desktop, target_x):
+    # Safe settling latency window: Ensures Win32 handle creation metrics normalize fully before shifting metrics
+    time.sleep(0.5)
     timeout = 3.0  
     start_time = time.time()
     window_found = False
@@ -366,17 +379,23 @@ def deploy_profile(url):
     RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{profile_count}"
     PROFILE_PATH = os.path.join(tempfile.gettempdir(), f"run_{RUN_ID}")
     
-    # 0-BYTE DISK WRITE INITIALIZATION: Dropped robocopy. Chrome self-generates profiles on launch.
-    os.makedirs(PROFILE_PATH, exist_ok=True)
+    # STRUCTURAL CONTEXT GENERATION: Pre-building clean user context explicitly avoids first-run tracking markers
+    pref_dir = os.path.join(PROFILE_PATH, "Default")
+    os.makedirs(pref_dir, exist_ok=True)
+    pref_data = {
+        "profile": {"exit_type": "Normal", "exited_cleanly": True},
+        "profile": {"default_content_setting_values": {"fullscreen": 2}}
+    }
+    with open(os.path.join(pref_dir, "Preferences"), "w", encoding="utf-8") as f:
+        json.dump(pref_data, f)
 
     physical_x_pos = desktop_index * PHYSICAL_WIDTH
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
-    current_ua = random.choice(DEVICE_FINGERPRINTS)
     
     args = [
         browser_path,
         f"--user-data-dir={PROFILE_PATH}",
-        f"--user-agent={current_ua}",
+        f"--user-agent={UA_DESKTOP}",
         f"--window-size={LOGICAL_WIDTH},{LOGICAL_HEIGHT}",
         f"--window-position={logical_x_pos},0",
         f"--force-device-scale-factor={SCALE_FACTOR}", 
@@ -390,18 +409,19 @@ def deploy_profile(url):
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
     
-    # SYSTEM SCHEDULER NORMALIZATION: Clean launch execution without above-normal thread forcing
-    process = subprocess.Popen(args)
+    # SYSTEM SHEDULER NORMALIZATION
+    ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+    process = subprocess.Popen(args, creationflags=ABOVE_NORMAL_PRIORITY_CLASS)
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
 
     force_window_to_desktop_and_position(process.pid, current_desktop, physical_x_pos)
     profile_count += 1
     desktop_index = (desktop_index + 1) % GRID_SIZE  
     update_console_status(profile_count)
+    time.sleep(1.5)
 
 def wnd_proc(hwnd, msg, wparam, lparam):
     if msg == WM_CLIPBOARDUPDATE:
-        # ROBUST INTERRUPT RETRY LOOP: Prevents transient locks or access denied failures
         for _ in range(10):
             try:
                 win32clipboard.OpenClipboard(hwnd)
