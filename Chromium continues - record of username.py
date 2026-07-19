@@ -214,7 +214,7 @@ OPTIMIZATION_FLAGS = [
     "--disable-ipc-flooding-protection",
     
     # --- Strict RAM Constraints ---
-    '--js-flags="--max-old-space-size=512 --expose-gc"' 
+    #'--js-flags="--max-old-space-size=512 --expose-gc"' 
 ]
 
 seen_links = set()
