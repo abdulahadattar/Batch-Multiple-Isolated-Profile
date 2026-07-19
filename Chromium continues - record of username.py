@@ -209,14 +209,12 @@ OPTIMIZATION_FLAGS = [
     
     # --- Asset Overhead Mitigations ---
     "--disable-smooth-scrolling",
-    "--disk-cache-size=0",
-    "--media-cache-size=0",
     "--no-proxy-server",
     "--disable-breakpad",
     "--disable-ipc-flooding-protection",
     
     # --- Strict RAM Constraints ---
-    '--js-flags="--max-old-space-size=256 --expose-gc"' 
+    '--js-flags="--max-old-space-size=512 --expose-gc"' 
 ]
 
 seen_links = set()
