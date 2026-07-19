@@ -4,7 +4,6 @@ import subprocess
 import ctypes
 import datetime
 import time
-import json
 import winreg
 import tempfile
 import atexit
@@ -47,11 +46,9 @@ TIMER_ID = 1
 HOTKEY_DISPLAY_OFF_ID = 101
 HOTKEY_MANUAL_BLANK_ID = 102
 DESKTOP_FILE_PATH = os.path.join(os.environ["USERPROFILE"], "Desktop", "profiles.txt")
-GLOBAL_EXTENSION_DIR = r"C:\ChromeGrid\Extension"
 
 # --- SYSTEM NOTIFICATIONS ---
 def send_notification(title, message):
-    """Non-blocking function to display toast notifications."""
     def _show_toast():
         try:
             toast(title, message, duration="short", audio={"silent": True})
@@ -65,49 +62,7 @@ _created_desktops = []
 GLOBAL_HWND = None
 CLEANUP_QUEUE = queue.Queue()
 
-def ensure_extension_built():
-    """Generates the runtime presentation extension in a persistent layout once."""
-    os.makedirs(GLOBAL_EXTENSION_DIR, exist_ok=True)
-    manifest = {
-        "manifest_version": 3,
-        "name": "Runtime Presentation Adjustment",
-        "version": "1.1",
-        "content_scripts": [{
-            "matches": ["<all_urls>"],
-            "js": ["content.js"],
-            "run_at": "document_start"
-        }]
-    }
-    content_script = """
-    (function() {
-        const exclusionSelectors = [
-            'div[class*="modal" i]', 'div[class*="popup" i]',
-            'div[class*="mask" i]', 'div[class*="overlay" i]',
-            'div[class*="award" i]', 'div[class*="gift" i]'
-        ];
-        const executeTargetedPurge = () => {
-            exclusionSelectors.forEach(selector => {
-                document.querySelectorAll(selector).forEach(node => {
-                    const contentText = node.textContent.toLowerCase();
-                    if (contentText.includes('rs30')) {
-                        node.style.display = 'none';
-                        node.remove();
-                    }
-                });
-            });
-        };
-        const observerInstance = new MutationObserver(() => { executeTargetedPurge(); });
-        observerInstance.observe(document.documentElement, { childList: true, subtree: true });
-        window.addEventListener('DOMContentLoaded', executeTargetedPurge);
-    })();
-    """
-    with open(os.path.join(GLOBAL_EXTENSION_DIR, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(manifest, f)
-    with open(os.path.join(GLOBAL_EXTENSION_DIR, "content.js"), "w", encoding="utf-8") as f:
-        f.write(content_script)
-
 def execute_profile_cleanup(path, process):
-    """Gracefully terminates browser profiles and securely cleans up directories."""
     if process.poll() is None:
         try:
             process.terminate()
@@ -131,7 +86,6 @@ def execute_profile_cleanup(path, process):
                 time.sleep(0.2)
 
 def background_cleanup_worker():
-    """Background worker processing file deletions cleanly out of the main thread loop."""
     while True:
         path, process = CLEANUP_QUEUE.get()
         try:
@@ -142,7 +96,6 @@ def background_cleanup_worker():
             CLEANUP_QUEUE.task_done()
 
 def cleanup_resources(sleep_ref=time.sleep, rmtree_ref=shutil.rmtree, exists_ref=os.path.exists):
-    """Performs structural cleanup of global window handles, timers, hotkeys, and active profiles."""
     print("\n[*] Commencing structural resource cleanup...")
     global GLOBAL_HWND
     if GLOBAL_HWND:
@@ -233,46 +186,37 @@ PHYSICAL_WIDTH = SCREEN_WIDTH // COLUMNS
 LOGICAL_WIDTH = int(PHYSICAL_WIDTH / SCALE_FACTOR)
 LOGICAL_HEIGHT = int(PHYSICAL_HEIGHT / SCALE_FACTOR)
 
-# --- SYSTEM-MATCHED USER AGENT ---
-# Matching a standard Windows x64 desktop engine signature prevents the platform mismatch flags triggered by mobile UAs on desktop environments
-UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
-# SAFE AND BALANCED HARDWARE ENGINE OPTIMIZATION FLAGS (FROM YOUR TRUSTED RUNS)
-OPTIMIZATION_FLAGS = [                                                                        
-    "--fps-limit=60",                          
-    "--disable-gpu-vsync",                      
-    "--ignore-gpu-blocklist",                  
-    "--use-angle=d3d11",                        
-    "--disable-site-isolation-trials",
-    "--disable-features=IsolateOrigins,site-per-process",
+# --- RECONFIGURED CLEAN HIGH-PERFORMANCE FLAGS (SAFE FOR CASINOS) ---
+OPTIMIZATION_FLAGS = [                                                                     
     "--mute-audio",
     "--disable-audio-output",
     "--disable-logging",
-    "--disable-dev-shm-usage",
-    "--disk-cache-size=0",
-    "--media-cache-size=0",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
-    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks", 
+    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks,OptimizationHints,Translate",
+    "--enable-features=Touch,PointerEvent,MobileLayout",
+    
+    # --- GPU Acceleration Restored for Smooth 60FPS Shared RAM Playback ---
     "--enable-gpu",
     "--enable-webgl",
     "--enable-gpu-rasterization",
     "--enable-gpu-compositing",
-    "--disable-software-rasterizer",
-    "--disable-fullscreen",
-    "--disable-background-networking",
+    "--use-angle=d3d11",
+    "--fps-limit=60",
+    "--disable-gpu-vsync",
+    "--ignore-gpu-blocklist",
+    
+    # --- Asset Overhead Mitigations ---
+    "--disable-smooth-scrolling",
+    "--disk-cache-size=0",
+    "--media-cache-size=0",
     "--no-proxy-server",
     "--disable-breakpad",
     "--disable-ipc-flooding-protection",
-    "--disable-threaded-scrolling",
-    "--disable-gl-extensions",
-    "--disable-ext-canvas2d-dynamic-rendering",
-    "--disable-canvas-aa",
-    "--disable-canvas-2d-image-chromium",
-    "--disable-composited-antialiasing",
-    "--disable-smooth-scrolling",
-    '--blink-settings=imagesEnabled=true',
+    
+    # --- Strict RAM Constraints ---
+    '--js-flags="--max-old-space-size=256 --expose-gc"' 
 ]
 
 seen_links = set()
@@ -341,8 +285,6 @@ def create_and_switch_desktop():
         return pyvda.VirtualDesktop.current()
 
 def force_window_to_desktop_and_position(pid, target_desktop, target_x):
-    # Safe settling latency window: Ensures Win32 handle creation metrics normalize fully before shifting metrics
-    time.sleep(0.5)
     timeout = 3.0  
     start_time = time.time()
     window_found = False
@@ -378,16 +320,7 @@ def deploy_profile(url):
 
     RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{profile_count}"
     PROFILE_PATH = os.path.join(tempfile.gettempdir(), f"run_{RUN_ID}")
-    
-    # STRUCTURAL CONTEXT GENERATION: Pre-building clean user context explicitly avoids first-run tracking markers
-    pref_dir = os.path.join(PROFILE_PATH, "Default")
-    os.makedirs(pref_dir, exist_ok=True)
-    pref_data = {
-        "profile": {"exit_type": "Normal", "exited_cleanly": True},
-        "profile": {"default_content_setting_values": {"fullscreen": 2}}
-    }
-    with open(os.path.join(pref_dir, "Preferences"), "w", encoding="utf-8") as f:
-        json.dump(pref_data, f)
+    os.makedirs(PROFILE_PATH, exist_ok=True)
 
     physical_x_pos = desktop_index * PHYSICAL_WIDTH
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
@@ -395,11 +328,9 @@ def deploy_profile(url):
     args = [
         browser_path,
         f"--user-data-dir={PROFILE_PATH}",
-        f"--user-agent={UA_DESKTOP}",
         f"--window-size={LOGICAL_WIDTH},{LOGICAL_HEIGHT}",
         f"--window-position={logical_x_pos},0",
         f"--force-device-scale-factor={SCALE_FACTOR}", 
-        f"--load-extension={GLOBAL_EXTENSION_DIR}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
@@ -408,17 +339,13 @@ def deploy_profile(url):
     ]
     
     print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
-    
-    # SYSTEM SHEDULER NORMALIZATION
-    ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
-    process = subprocess.Popen(args, creationflags=ABOVE_NORMAL_PRIORITY_CLASS)
+    process = subprocess.Popen(args)
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
 
     force_window_to_desktop_and_position(process.pid, current_desktop, physical_x_pos)
     profile_count += 1
     desktop_index = (desktop_index + 1) % GRID_SIZE  
     update_console_status(profile_count)
-    time.sleep(1.5)
 
 def wnd_proc(hwnd, msg, wparam, lparam):
     if msg == WM_CLIPBOARDUPDATE:
@@ -463,11 +390,7 @@ def launch_grid():
         print("[!] Error: Chrome executable missing.")
         return
 
-    print("[*] Setting up extension asset rules...")
-    ensure_extension_built()
-
     threading.Thread(target=background_cleanup_worker, daemon=True).start()
-
     print(f"[*] Monitoring grid profiles ({SCREEN_WIDTH}x{PHYSICAL_HEIGHT}). Ready.")
     update_console_status(0)
 
