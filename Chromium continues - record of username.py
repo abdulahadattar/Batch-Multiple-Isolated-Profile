@@ -9,6 +9,7 @@ import tempfile
 import atexit
 import shutil
 import threading
+import json
 import queue
 
 # --- DEPENDENCY RESOLUTION ---
@@ -137,7 +138,7 @@ def check_and_clean_dead_profiles():
 # --- DISPLAY METRICS & CONFIGURATION ---
 GRID_SIZE = 4
 COLUMNS = 4
-SCALE_FACTOR = 1.0  # Normalized to 1.0 to prevent DPR fingerprint anomaly (devicePixelRatio = 0.8 ban trigger)
+SCALE_FACTOR = 1.0  # Standard scale factor to prevent DPR fingerprinting anomalies
 
 try:
     ctypes.windll.user32.SetProcessDPIAware()
@@ -160,22 +161,27 @@ PHYSICAL_WIDTH = SCREEN_WIDTH // COLUMNS
 LOGICAL_WIDTH = int(PHYSICAL_WIDTH / SCALE_FACTOR)
 LOGICAL_HEIGHT = int(PHYSICAL_HEIGHT / SCALE_FACTOR)
 
-# Consistent Mobile User Agent matching mobile features
-UA_MOBILE = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-
-# HARMONIZED HARDWARE ACCELERATED & ANTI-DETECTION FLAGS
+# --- CHROMIUM OPTIMIZATION FLAGS ---
 OPTIMIZATION_FLAGS = [
-    # --- Sound & Logging Constraints ---
+    # --- Extension & Default App Striping (Saves 40-80MB RAM per Instance) ---
+    "--disable-external-extensions",
+    "--disable-default-apps",
+    "--disable-component-extensions-with-background-pages",
+    
+    # --- Fullscreen & Layout Locks ---
+    "--disable-fullscreen",
+    
+    # --- Audio & Logging Overhead Mitigation ---
     "--mute-audio",
     "--disable-logging",
     
-    # --- Background Execution Maintenance across Virtual Desktops ---
+    # --- Unthrottled Background Execution Across Virtual Desktops ---
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks,OptimizationHints,Translate",
     
-    # --- GPU Acceleration for AMD Radeon iGPU ---
+    # --- GPU Acceleration for AMD Integrated Graphics ---
     "--enable-gpu",
     "--enable-webgl",
     "--enable-gpu-rasterization",
@@ -184,20 +190,14 @@ OPTIMIZATION_FLAGS = [
     "--ignore-gpu-blocklist",
     "--disable-software-rasterizer",
     
-    # --- Anti-Detection / Fingerprint Alignment ---
-    f"--user-agent={UA_MOBILE}",
-    "--enable-features=Touch,PointerEvent,MobileLayout",
-    "--disable-blink-features=AutomationControlled",
-    
-    # --- Asset & Memory Overhead Management ---
+    # --- Network & IPC Overhead Mitigation ---
     "--disable-smooth-scrolling",
     "--no-proxy-server",
     "--disable-breakpad",
     "--disable-ipc-flooding-protection",
-    "--disk-cache-size=10485760",  # 10MB minimal persistent cache limit
     
-    # --- Balanced V8 Memory Allocations (Prevents GC Stutters) ---
-    '--js-flags="--max-old-space-size=384"'
+    # --- V8 Engine Memory Constraints ---
+    '--js-flags="--max-old-space-size=512"'
 ]
 
 seen_links = set()
@@ -290,7 +290,18 @@ def deploy_profile(url):
 
     RUN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{profile_count}"
     PROFILE_PATH = os.path.join(tempfile.gettempdir(), f"run_{RUN_ID}")
-    os.makedirs(PROFILE_PATH, exist_ok=True)
+    
+    # Initialize profile directory structure with explicit non-fullscreen preferences
+    pref_dir = os.path.join(PROFILE_PATH, "Default")
+    os.makedirs(pref_dir, exist_ok=True)
+    pref_data = {
+        "profile": {
+            "exit_type": "Normal",
+            "exited_cleanly": True
+        }
+    }
+    with open(os.path.join(pref_dir, "Preferences"), "w", encoding="utf-8") as f:
+        json.dump(pref_data, f)
 
     physical_x_pos = desktop_index * PHYSICAL_WIDTH
     logical_x_pos = int(physical_x_pos / SCALE_FACTOR)
