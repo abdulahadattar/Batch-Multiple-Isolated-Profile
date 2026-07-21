@@ -9,7 +9,6 @@ import tempfile
 import atexit
 import shutil
 import threading
-import random
 import queue
 
 # --- DEPENDENCY RESOLUTION ---
@@ -26,17 +25,14 @@ def ensure_dependencies():
             else:
                 __import__(module)
         except ImportError:
-            print(f"[*] Installing missing dependency: {package}")
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 ensure_dependencies()
 
 import pyvda
 import win32gui
-import win32process
 import win32clipboard
 import win32con
-from win11toast import toast
 
 # --- CONSTANTS ---
 WM_CLIPBOARDUPDATE = 0x031D
@@ -46,15 +42,6 @@ TIMER_ID = 1
 HOTKEY_DISPLAY_OFF_ID = 101
 HOTKEY_MANUAL_BLANK_ID = 102
 DESKTOP_FILE_PATH = os.path.join(os.environ["USERPROFILE"], "Desktop", "profiles.txt")
-
-# --- SYSTEM NOTIFICATIONS ---
-def send_notification(title, message):
-    def _show_toast():
-        try:
-            toast(title, message, duration="short", audio={"silent": True})
-        except Exception:
-            pass
-    threading.Thread(target=_show_toast, daemon=True).start()
 
 # --- RESOURCE MANAGEMENT ---
 _tracked_profiles = []
@@ -67,7 +54,7 @@ def execute_profile_cleanup(path, process):
         try:
             process.terminate()
             process.wait(timeout=1.0)
-        except (subprocess.TimeoutExpired, Exception):
+        except Exception:
             if process.poll() is None:
                 try:
                     subprocess.call(
@@ -78,7 +65,7 @@ def execute_profile_cleanup(path, process):
                     pass
 
     if os.path.exists(path):
-        for _ in range(30):
+        for _ in range(20):
             try:
                 shutil.rmtree(path)
                 break
@@ -95,8 +82,7 @@ def background_cleanup_worker():
         finally:
             CLEANUP_QUEUE.task_done()
 
-def cleanup_resources(sleep_ref=time.sleep, rmtree_ref=shutil.rmtree, exists_ref=os.path.exists):
-    print("\n[*] Commencing structural resource cleanup...")
+def cleanup_resources():
     global GLOBAL_HWND
     if GLOBAL_HWND:
         try:
@@ -114,11 +100,6 @@ def cleanup_resources(sleep_ref=time.sleep, rmtree_ref=shutil.rmtree, exists_ref
                 item["process"].terminate()
             except Exception:
                 pass
-    
-    try:
-        sleep_ref(0.5)
-    except TypeError:
-        pass
 
     for item in _tracked_profiles:
         if item["process"].poll() is None:
@@ -129,23 +110,17 @@ def cleanup_resources(sleep_ref=time.sleep, rmtree_ref=shutil.rmtree, exists_ref
                 )
             except Exception:
                 pass
-        if exists_ref(item["path"]):
-            for _ in range(10):
-                try:
-                    rmtree_ref(item["path"])
-                    break
-                except (PermissionError, OSError):
-                    try:
-                        sleep_ref(0.1)
-                    except TypeError:
-                        pass
+        if os.path.exists(item["path"]):
+            try:
+                shutil.rmtree(item["path"], ignore_errors=True)
+            except Exception:
+                pass
 
     for desktop in _created_desktops:
         try:
             desktop.remove()
         except Exception:
             pass
-    print("[*] Cleanup finalized.")
 
 atexit.register(cleanup_resources)
 
@@ -154,7 +129,6 @@ def check_and_clean_dead_profiles():
     still_active = []
     for item in _tracked_profiles:
         if item["process"].poll() is not None:
-            print(f"[*] Profile window closed by user. Pushing to async cleanup queue...")
             CLEANUP_QUEUE.put((item["path"], item["process"]))
         else:
             still_active.append(item)
@@ -163,7 +137,7 @@ def check_and_clean_dead_profiles():
 # --- DISPLAY METRICS & CONFIGURATION ---
 GRID_SIZE = 4
 COLUMNS = 4
-SCALE_FACTOR = 0.8
+SCALE_FACTOR = 1.0  # Normalized to 1.0 to prevent DPR fingerprint anomaly (devicePixelRatio = 0.8 ban trigger)
 
 try:
     ctypes.windll.user32.SetProcessDPIAware()
@@ -186,35 +160,44 @@ PHYSICAL_WIDTH = SCREEN_WIDTH // COLUMNS
 LOGICAL_WIDTH = int(PHYSICAL_WIDTH / SCALE_FACTOR)
 LOGICAL_HEIGHT = int(PHYSICAL_HEIGHT / SCALE_FACTOR)
 
-# --- RECONFIGURED CLEAN HIGH-PERFORMANCE FLAGS (SAFE FOR CASINOS) ---
-OPTIMIZATION_FLAGS = [                                                                     
+# Consistent Mobile User Agent matching mobile features
+UA_MOBILE = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+
+# HARMONIZED HARDWARE ACCELERATED & ANTI-DETECTION FLAGS
+OPTIMIZATION_FLAGS = [
+    # --- Sound & Logging Constraints ---
     "--mute-audio",
-    "--disable-audio-output",
     "--disable-logging",
+    
+    # --- Background Execution Maintenance across Virtual Desktops ---
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,BackgroundTasks,OptimizationHints,Translate",
-    "--enable-features=Touch,PointerEvent,MobileLayout",
     
-    # --- GPU Acceleration Restored for Smooth 60FPS Shared RAM Playback ---
+    # --- GPU Acceleration for AMD Radeon iGPU ---
     "--enable-gpu",
     "--enable-webgl",
     "--enable-gpu-rasterization",
     "--enable-gpu-compositing",
     "--use-angle=d3d11",
-    "--fps-limit=60",
-    "--disable-gpu-vsync",
     "--ignore-gpu-blocklist",
+    "--disable-software-rasterizer",
     
-    # --- Asset Overhead Mitigations ---
+    # --- Anti-Detection / Fingerprint Alignment ---
+    f"--user-agent={UA_MOBILE}",
+    "--enable-features=Touch,PointerEvent,MobileLayout",
+    "--disable-blink-features=AutomationControlled",
+    
+    # --- Asset & Memory Overhead Management ---
     "--disable-smooth-scrolling",
     "--no-proxy-server",
     "--disable-breakpad",
     "--disable-ipc-flooding-protection",
+    "--disk-cache-size=10485760",  # 10MB minimal persistent cache limit
     
-    # --- Strict RAM Constraints ---
-    #'--js-flags="--max-old-space-size=512 --expose-gc"' 
+    # --- Balanced V8 Memory Allocations (Prevents GC Stutters) ---
+    '--js-flags="--max-old-space-size=384"'
 ]
 
 seen_links = set()
@@ -239,16 +222,12 @@ def find_chrome_executable():
     return None
 
 def toggle_display_off():
-    print("\n[*] Display off signal sent via hotkey. Press any physical key or mouse click to wake.")
-    send_notification("Display Status", "Display turned off. Press any key to wake.")
     ctypes.windll.user32.PostMessageW(0xFFFF, 0x0112, 0xF170, 2)
 
 def handle_clipboard_input(clipboard_data, desktop_file_path):
     if clipboard_data and (clipboard_data not in seen_links) and (clipboard_data not in seen_usernames):
         if clipboard_data.startswith("http"):
             seen_links.add(clipboard_data)
-            print(f"\n[*] Unique link caught: {clipboard_data}")
-            send_notification("Link Caught", "Deploying new browser profile.")
             deploy_profile(clipboard_data)
         elif len(clipboard_data) <= 30 and clipboard_data.isalnum() and any(char.isdigit() for char in clipboard_data):
             seen_usernames.add(clipboard_data)
@@ -256,14 +235,10 @@ def handle_clipboard_input(clipboard_data, desktop_file_path):
             try:
                 with open(desktop_file_path, "a", encoding="utf-8") as f:
                     f.write(f"[{timestamp}] {clipboard_data}\n")
-                print(f"[*] Username logged to Desktop: {clipboard_data}")
-                send_notification("Username Saved", f"{clipboard_data}\nSaved to profiles.txt")
-            except Exception as e:
-                print(f"[!] File write error: {e}")
+            except Exception:
+                pass
 
 def trigger_manual_blank():
-    print("\n[*] Manual shortcut detected. Preparing empty grid profile...")
-    send_notification("Profile Deployed", "Manual blank profile initialized.")
     deploy_profile("about:blank")
 
 def update_console_status(current_number):
@@ -275,11 +250,8 @@ def create_and_switch_desktop():
         new_desktop = pyvda.VirtualDesktop.create()
         new_desktop.go()
         _created_desktops.append(new_desktop)
-        print("[*] Automatically shifted to a fresh Virtual Desktop.")
-        send_notification("Desktop Shift", "Moved to a new Virtual Desktop.")
         return new_desktop
-    except Exception as e:
-        print(f"[!] Desktop shift error: {e}")
+    except Exception:
         return pyvda.VirtualDesktop.current()
 
 def force_window_to_desktop_and_position(pid, target_desktop, target_x):
@@ -328,7 +300,6 @@ def deploy_profile(url):
         f"--user-data-dir={PROFILE_PATH}",
         f"--window-size={LOGICAL_WIDTH},{LOGICAL_HEIGHT}",
         f"--window-position={logical_x_pos},0",
-        f"--force-device-scale-factor={SCALE_FACTOR}", 
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
@@ -336,7 +307,6 @@ def deploy_profile(url):
         url
     ]
     
-    print(f"[*] Deploying Profile {profile_count+1} to Position {desktop_index+1}...")
     process = subprocess.Popen(args)
     _tracked_profiles.append({"process": process, "path": PROFILE_PATH})
 
@@ -347,7 +317,7 @@ def deploy_profile(url):
 
 def wnd_proc(hwnd, msg, wparam, lparam):
     if msg == WM_CLIPBOARDUPDATE:
-        for _ in range(10):
+        for _ in range(5):
             try:
                 win32clipboard.OpenClipboard(hwnd)
                 try:
@@ -389,7 +359,6 @@ def launch_grid():
         return
 
     threading.Thread(target=background_cleanup_worker, daemon=True).start()
-    print(f"[*] Monitoring grid profiles ({SCREEN_WIDTH}x{PHYSICAL_HEIGHT}). Ready.")
     update_console_status(0)
 
     wc = win32gui.WNDCLASS()
@@ -420,7 +389,7 @@ def launch_grid():
         
         win32gui.PumpMessages()
     except Exception as e:
-        print(f"[!] Core Win32 execution loop failure: {e}")
+        print(f"[!] Win32 execution loop failure: {e}")
 
 if __name__ == "__main__":
     launch_grid()
